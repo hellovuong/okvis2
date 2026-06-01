@@ -1457,6 +1457,11 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     }
     landmarksToMatchVec[im] = landmarksToMatch;
 
+    // bucket the landmark projections so each keypoint only tests nearby landmarks (cell size =
+    // matching window, so a windowed query touches a small, fixed neighbourhood of cells)
+    LandmarkGrid grid;
+    grid.build(landmarksToMatch, maxU, maxV, reprThreshold);
+
     // multithreaded matching
     const size_t num_matching_threads = size_t(params.frontend.num_matching_threads);
 
@@ -1472,7 +1477,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
           &Frontend::matchToMapByThread<CAMERA_GEOMETRY>, this, t, num_matching_threads,
               std::cref(estimator), std::cref(params), currentFrameId,
               loopClosureLandmarksToUseExclusively, std::cref(T_WS1),
-              std::cref(landmarksToMatch), numKeypoints,
+              std::cref(landmarksToMatch), std::cref(grid), numKeypoints,
               std::cref(pointMap), im, std::cref(multiFrame), std::ref(distances),
               std::ref(lmIds), std::ref(hps_W), std::ref(ctrs), std::ref(reprErrors));
     }
@@ -1699,15 +1704,12 @@ void Frontend::matchToMapByThread(
     const std::set<LandmarkId>* loopClosureLandmarksToUseExclusively,
     const kinematics::Transformation& T_WS1,
     const AlignedMap<LandmarkId, LandmarkToMatch>& landmarksToMatch,
+    const LandmarkGrid& grid,
     size_t numKeypoints, const MapPoints& pointMap,
     size_t im, const MultiFramePtr&  multiFrame, std::vector<double>& distances,
     std::vector<LandmarkId>& lmIds, AlignedVector<Eigen::Vector4d>& hps_W,
     std::vector<size_t>& ctrs,
     std::vector<double>& reprErrors) const {
-
-  const kinematics::Transformation T_SC = *multiFrame->T_SC(im);
-  const kinematics::Transformation T_WC1 = T_WS1 * T_SC;
-  const kinematics::Transformation T_CW1 = T_WC1.inverse();
 
   const double f = 0.5*(multiFrame->geometryAs<CAMERA_GEOMETRY>(im)->focalLengthU()
                    + multiFrame->geometryAs<CAMERA_GEOMETRY>(im)->focalLengthV());
@@ -1715,66 +1717,91 @@ void Frontend::matchToMapByThread(
   const double reprojectionThreshold = params.imu.use ? 3.0+f*0.06 : 3.0+f*0.34;
   const double reprojectionThresholdSq = reprojectionThreshold * reprojectionThreshold;
 
-  ctrs[threadIdx] = 0;
+  // Lowe ratio test: reject a best match that is not clearly better than the runner-up landmark.
+  const double loweRatio = 0.8;
 
-  // go through all landmarks
+  ctrs[threadIdx] = 0;
+  reprErrors[threadIdx] = 0.0;
+
+  // This thread exclusively owns keypoint indices [startK, endK) -- so all writes to
+  // distances[k]/lmIds[k] below are race-free without any synchronisation.
   const size_t segment = numKeypoints/numThreads;
   const size_t startK = segment*threadIdx;
   const size_t endK = threadIdx+1 == numThreads ? numKeypoints : startK + segment;
   const uchar* ddata = multiFrame->keypointDescriptor(im, 0);
-  Eigen::Matrix2Xd keypoints(2,numKeypoints);
-  std::vector<bool> use(numKeypoints, true);
+
+  // For each owned keypoint, only the landmarks bucketed near its pixel are tested (grid lookup),
+  // rather than every landmark -- and the best/second-best distances enable a Lowe ratio test.
+  std::vector<const LandmarkGrid::Entry*> candidates;
   for(size_t k = startK; k < endK; k++) {
-    Eigen::Vector2d keypoint;
-    multiFrame->getKeypoint(im, k, keypoint);
-    keypoints.col(k) = keypoint;
+
     const uint64_t previousId = multiFrame->landmarkId(im,k);
-    if(previousId&&!loopClosureLandmarksToUseExclusively) {
-      use[k] = false; // I don't remember why this could happen -- just being paranoid.
+    if(previousId && !loopClosureLandmarksToUseExclusively) {
       continue; // already matched
     }
-  }
-  for(auto it = landmarksToMatch.begin(); it != landmarksToMatch.end(); ++it) {
 
-    if(!it->second.is3d) {
+    Eigen::Vector2d keypoint;
+    multiFrame->getKeypoint(im, k, keypoint);
+
+    grid.query(keypoint, reprojectionThreshold, candidates);
+    if(candidates.empty()) {
       continue;
     }
 
-    if(loopClosureLandmarksToUseExclusively) {
-      if(!loopClosureLandmarksToUseExclusively->count(it->first)) {
+    const uchar* descriptorK = ddata + k*48;
+    double best = briskMatchingThreshold_;   // best landmark distance for this keypoint
+    double second = briskMatchingThreshold_;  // runner-up landmark distance (for ratio test)
+    LandmarkId bestId;
+    double bestReprDist = 0.0;
+    for(const LandmarkGrid::Entry* cand : candidates) {
+      const LandmarkToMatch& lm = cand->second;
+      if(!lm.is3d) {
+        continue;
+      }
+      if(loopClosureLandmarksToUseExclusively
+          && !loopClosureLandmarksToUseExclusively->count(cand->first)) {
         continue; // skip non-loop-closure points in this case
       }
-    }
 
-    // match all present descriptors
-    const Eigen::Vector2d projection = it->second.projection;
-    for(size_t k = startK; k < endK; k++) {
-
-      if(!use[k]) {
+      // exact reprojection window test (the grid only bounds candidates to nearby buckets)
+      const Eigen::Vector2d reprDist = lm.projection - keypoint;
+      const double reprDistSq = reprDist.dot(reprDist);
+      if(reprDistSq > reprojectionThresholdSq) {
         continue;
       }
 
-      // also check image distance, unless tracking lost.
-      const Eigen::Vector2d reprDist = projection - keypoints.col(k);
-      if (reprDist.dot(reprDist) > reprojectionThresholdSq) {
-        continue;
-      }
-
-      const uchar* descriptorK = ddata + k*48;
-      for(int d = 0; d<it->second.descriptors.rows; ++d) {
+      // best Hamming distance over this landmark's (up to 3) descriptors
+      double lmDist = 512.0;
+      for(int d = 0; d<lm.descriptors.rows; ++d) {
         const double dist = brisk::Hamming::PopcntofXORed(
-            descriptorK,
-            it->second.descriptors.data + d*48, 3);
-        if(dist < distances[k]) {
-          distances[k] = dist;
-          lmIds[k] = it->first;
-          ctrs[threadIdx]++;
-          reprErrors[threadIdx] += sqrt(reprDist.dot(reprDist));
+            descriptorK, lm.descriptors.data + d*48, 3);
+        if(dist < lmDist) {
+          lmDist = dist;
         }
       }
+
+      if(lmDist < best) {
+        second = best;
+        best = lmDist;
+        bestId = cand->first;
+        bestReprDist = std::sqrt(reprDistSq);
+      } else if(lmDist < second) {
+        second = lmDist;
+      }
+    }
+
+    // accept the best landmark match; apply the ratio test only when a competitor exists
+    if(best < briskMatchingThreshold_ && bestId.isInitialised()
+        && (second >= briskMatchingThreshold_ || best <= loweRatio*second)) {
+      distances[k] = best;
+      lmIds[k] = bestId;
+      ctrs[threadIdx]++;
+      reprErrors[threadIdx] += bestReprDist;
     }
   }
-  reprErrors[threadIdx] /= double(ctrs[threadIdx]);
+  if(ctrs[threadIdx] > 0) {
+    reprErrors[threadIdx] /= double(ctrs[threadIdx]);
+  }
 }
 
 // Match a new multiframe to existing keyframes:

@@ -40,7 +40,10 @@
 #ifndef INCLUDE_OKVIS_FRONTEND_HPP_
 #define INCLUDE_OKVIS_FRONTEND_HPP_
 
+#include <algorithm>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 #include <okvis/Component.hpp>
 #include <okvis/ViFrontendInterface.hpp>
@@ -469,6 +472,77 @@ private:
     bool ignore = false; ///< Ignore if classified as sky / person.
   };
 
+  /// \brief Spatial bucket grid over landmark projections for windowed candidate lookup.
+  /// Buckets the 2D projections of the LandmarkToMatch entries so that, given a keypoint pixel,
+  /// only the landmarks projecting nearby need to be tested. This avoids the brute-force
+  /// O(numLandmarks * numKeypoints) scan while preserving the per-keypoint thread ownership of
+  /// matchToMapByThread() (each thread still writes only its own keypoint indices).
+  struct LandmarkGrid {
+    typedef std::pair<const LandmarkId, LandmarkToMatch> Entry; ///< A landmarksToMatch entry.
+
+    /// \brief Bucket all landmark projections. cellSize should be >= the matching window.
+    void build(const AlignedMap<LandmarkId, LandmarkToMatch>& landmarks,
+               double width, double height, double cellSize) {
+      cellSize_ = std::max(1.0, cellSize);
+      // allow a one-cell margin, since projections may sit slightly outside the image bounds
+      originX_ = -cellSize_;
+      originY_ = -cellSize_;
+      cols_ = int((width + 2.0*cellSize_)/cellSize_) + 1;
+      rows_ = int((height + 2.0*cellSize_)/cellSize_) + 1;
+      cells_.assign(size_t(cols_*rows_), std::vector<const Entry*>());
+      for(const auto& lm : landmarks) {
+        int cx, cy;
+        if(cell(lm.second.projection, cx, cy)) {
+          cells_[size_t(cy*cols_ + cx)].push_back(&lm);
+        }
+      }
+    }
+
+    /// \brief Append entries bucketed within `radius` of `px` (a superset of the true neighbours;
+    ///        the caller still applies the exact distance test).
+    void query(const Eigen::Vector2d& px, double radius,
+               std::vector<const Entry*>& out) const {
+      out.clear();
+      if(cells_.empty()) {
+        return;
+      }
+      const int reach = int(radius/cellSize_) + 1;
+      int cx, cy;
+      cellClamped(px, cx, cy);
+      for(int dy = -reach; dy <= reach; ++dy) {
+        const int y = cy + dy;
+        if(y < 0 || y >= rows_) {
+          continue;
+        }
+        for(int dx = -reach; dx <= reach; ++dx) {
+          const int x = cx + dx;
+          if(x < 0 || x >= cols_) {
+            continue;
+          }
+          const std::vector<const Entry*>& bucket = cells_[size_t(y*cols_ + x)];
+          out.insert(out.end(), bucket.begin(), bucket.end());
+        }
+      }
+    }
+
+   private:
+    bool cell(const Eigen::Vector2d& px, int& cx, int& cy) const {
+      cx = int((px[0]-originX_)/cellSize_);
+      cy = int((px[1]-originY_)/cellSize_);
+      return cx >= 0 && cx < cols_ && cy >= 0 && cy < rows_;
+    }
+    void cellClamped(const Eigen::Vector2d& px, int& cx, int& cy) const {
+      cx = std::min(std::max(int((px[0]-originX_)/cellSize_), 0), cols_-1);
+      cy = std::min(std::max(int((px[1]-originY_)/cellSize_), 0), rows_-1);
+    }
+    int cols_ = 0; ///< Number of grid columns.
+    int rows_ = 0; ///< Number of grid rows.
+    double cellSize_ = 1.0; ///< Grid cell edge length (pixels).
+    double originX_ = 0.0; ///< Pixel x-coordinate of the grid origin.
+    double originY_ = 0.0; ///< Pixel y-coordinate of the grid origin.
+    std::vector<std::vector<const Entry*>> cells_; ///< Buckets row-major (cy*cols_ + cx).
+  };
+
   /**
    * @brief Parallelisable sub-part of matchToMap -- proper 3D points..
    * @tparam CAMERA_GEOMETRY The camera geometry type to use.
@@ -497,6 +571,7 @@ private:
       const std::set<LandmarkId>* loopClosureLandmarksToUseExclusively,
       const kinematics::Transformation& T_WS1,
       const AlignedMap<LandmarkId, LandmarkToMatch>& landmarksToMatch,
+      const LandmarkGrid& grid,
       size_t numKeypoints,
       const MapPoints& pointMap, size_t im, const MultiFramePtr&  multiFrame,
       std::vector<double>& distances, std::vector<LandmarkId>& lmIds,
