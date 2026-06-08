@@ -81,6 +81,15 @@ class Frontend : public ViFrontendInterface {
                      const cameras::NCameraSystem &nCameraSystem,
                      bool componentFixed = true);
 
+  /**
+   * @brief Register the frames of a prior map (already loaded into the estimator
+   *        graph as a frozen anchor) into the main place-recognition database, so
+   *        live frames can relocalise against them via the loop-closure path.
+   * @param priorFrames The prior multiframes keyed by their (kept) state id.
+   * @return True on success.
+   */
+  bool addPriorMapFrames(const std::map<StateId, MultiFramePtr> &priorFrames);
+
   ///@{
   /**
    * @brief Detection and descriptor extraction on a per image basis.

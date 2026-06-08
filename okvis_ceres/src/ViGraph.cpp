@@ -83,8 +83,11 @@ StateId ViGraph::addStatesInitialise(
   State state;
   state.timestamp = timestamp;
   state.isKeyframe = true; // first one must be keyframe.
-  OKVIS_ASSERT_TRUE_DBG(Exception, states_.size()==0, "states added before...")
-  StateId id(1);
+  // Normally this is the very first state (id 1). When a prior map has been
+  // loaded, its states already occupy ids 1..N, so the first live state is
+  // initialised fresh (own gravity-aligned world frame) just above the prior
+  // ids. This keeps states_.rbegin() == newest live state for all later frames.
+  StateId id = states_.empty() ? StateId(1) : StateId(states_.rbegin()->first + 1);
 
   // set translation to zero, unit rotation
   kinematics::Transformation T_WS;

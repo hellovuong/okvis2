@@ -469,9 +469,12 @@ bool ThreadedSlam::processFrame() {
     optimisationThread_.join();
   }
 
-  // now store last optimised state for later use
-  if (estimator_.numFrames() > 0) {
-    const StateId currentId = estimator_.currentStateId();
+  // now store last optimised state for later use. currentStateId() returns an
+  // uninitialised id while only a prior map is loaded (no live frame yet), so
+  // lastOptimisedState_ is never seeded from a prior-map frame -- otherwise the
+  // next live frame would try to IMU-propagate from a prior-session timestamp.
+  const StateId currentId = estimator_.currentStateId();
+  if (currentId.isInitialised()) {
     lastOptimisedState_.T_WS = estimator_.pose(currentId);
     SpeedAndBias speedAndBias = estimator_.speedAndBias(currentId);
     lastOptimisedState_.v_W = speedAndBias.head<3>();
@@ -479,8 +482,10 @@ bool ThreadedSlam::processFrame() {
     lastOptimisedState_.b_a = speedAndBias.tail<3>();
     lastOptimisedState_.id = currentId;
     lastOptimisedState_.timestamp = estimator_.timestamp(currentId);
-    if (estimator_.numFrames() > 1) {
-      const StateId previousId(currentId.value() - 1);
+    const StateId previousId(currentId.value() - 1);
+    // only use the previous state if it is a live frame (not a prior-map frame)
+    if (previousId.isInitialised() && !estimator_.isPriorFrame(previousId)
+        && estimator_.numFrames() > 1) {
       preLastOptimisedState_.T_WS = estimator_.pose(previousId);
       preLastOptimisedState_.id = previousId;
       preLastOptimisedState_.timestamp = estimator_.timestamp(previousId);
@@ -492,8 +497,10 @@ bool ThreadedSlam::processFrame() {
     return false;
   }
 
-  // remove imuMeasurements from deque
-  if (estimator_.numFrames() > 0) {
+  // remove imuMeasurements from deque (only once we have a real live optimised
+  // state; lastOptimisedState_ is uninitialised while only a prior map is loaded,
+  // and Time(0) - overlap would underflow the timestamp representation).
+  if (lastOptimisedState_.id.isInitialised()) {
     if(parameters_.imu.use) {
       while (!shutdown_
              && (imuMeasurementDeque_.front().timeStamp
@@ -656,6 +663,7 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
       SpeedAndBias speedAndBias = estimator_.speedAndBias(id);
       Time timestamp = estimator_.timestamp(id);
       const bool isKeyframe = estimator_.isKeyframe(id);
+      if (estimator_.isPriorFrame(id)) continue; // prior-map frames: static visual anchor, not live trajectory
       ImuMeasurementDeque imuMeasurements = imuMeasurementsByFrame_.at(id);
       Eigen::Vector3d omega_S(0.0, 0.0, 0.0); // get this for real now:
       for(auto riter = imuMeasurements.rbegin(); riter!=imuMeasurements.rend(); ++riter) {
@@ -677,6 +685,7 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
       kinematics::Transformation T_WS = estimator_.pose(id);
       SpeedAndBias speedAndBias = estimator_.speedAndBias(id);
       Time timestamp = estimator_.timestamp(id);
+      if (estimator_.isPriorFrame(id)) continue; // prior-map frames: static visual anchor, not live trajectory
       ImuMeasurementDeque imuMeasurements = imuMeasurementsByFrame_.at(id);
       Eigen::Vector3d omega_S(0.0, 0.0, 0.0); // get this for real now:
       for (auto riter = imuMeasurements.rbegin(); riter != imuMeasurements.rend(); ++riter) {
@@ -949,7 +958,8 @@ void ThreadedSlam::stopThreading() {
           kinematics::Transformation T_WS = estimator_.pose(id);
           SpeedAndBias speedAndBias = estimator_.speedAndBias(id);
           Time timestamp = estimator_.timestamp(id);
-          ImuMeasurementDeque imuMeasurements = imuMeasurementsByFrame_.at(id);
+          if (estimator_.isPriorFrame(id)) continue; // prior-map frames: static visual anchor, not live trajectory
+      ImuMeasurementDeque imuMeasurements = imuMeasurementsByFrame_.at(id);
           Eigen::Vector3d omega_S(0.0, 0.0, 0.0); // get this for real now:
           for (auto riter = imuMeasurements.rbegin(); riter != imuMeasurements.rend(); ++riter) {
             if (riter->timeStamp < timestamp) {
@@ -969,7 +979,8 @@ void ThreadedSlam::stopThreading() {
           kinematics::Transformation T_WS = estimator_.pose(id);
           SpeedAndBias speedAndBias = estimator_.speedAndBias(id);
           Time timestamp = estimator_.timestamp(id);
-          ImuMeasurementDeque imuMeasurements = imuMeasurementsByFrame_.at(id);
+          if (estimator_.isPriorFrame(id)) continue; // prior-map frames: static visual anchor, not live trajectory
+      ImuMeasurementDeque imuMeasurements = imuMeasurementsByFrame_.at(id);
           Eigen::Vector3d omega_S(0.0, 0.0, 0.0); // get this for real now:
           for (auto riter = imuMeasurements.rbegin(); riter != imuMeasurements.rend(); ++riter) {
             if (riter->timeStamp < timestamp) {
@@ -1095,6 +1106,7 @@ void ThreadedSlam::doFinalBa()
       kinematics::Transformation T_WS = estimator_.pose(id);
       SpeedAndBias speedAndBias = estimator_.speedAndBias(id);
       Time timestamp = estimator_.timestamp(id);
+      if (estimator_.isPriorFrame(id)) continue; // prior-map frames: static visual anchor, not live trajectory
       ImuMeasurementDeque imuMeasurements = imuMeasurementsByFrame_.at(id);
       Eigen::Vector3d omega_S(0.0, 0.0, 0.0); // get this for real now:
       for(auto riter = imuMeasurements.rbegin(); riter!=imuMeasurements.rend(); ++riter) {
@@ -1115,6 +1127,7 @@ void ThreadedSlam::doFinalBa()
       kinematics::Transformation T_WS = estimator_.pose(id);
       SpeedAndBias speedAndBias = estimator_.speedAndBias(id);
       Time timestamp = estimator_.timestamp(id);
+      if (estimator_.isPriorFrame(id)) continue; // prior-map frames: static visual anchor, not live trajectory
       ImuMeasurementDeque imuMeasurements = imuMeasurementsByFrame_.at(id);
       Eigen::Vector3d omega_S(0.0, 0.0, 0.0); // get this for real now:
       for (auto riter = imuMeasurements.rbegin(); riter != imuMeasurements.rend(); ++riter) {
@@ -1165,6 +1178,21 @@ bool ThreadedSlam::saveMap() {
     return estimator_.saveMap(mapCsvFileName_);
   }
   return false;
+}
+
+bool ThreadedSlam::loadMap(const std::string & path) {
+  // Load before any frames are processed (the optimisation threads are idle,
+  // blocking on the empty input queues, so the estimator graphs are quiescent).
+  std::map<StateId, MultiFramePtr> priorFrames;
+  if(!estimator_.loadMap(path, parameters_.nCameraSystem, parameters_.imu, priorFrames)) {
+    LOG(ERROR) << "Failed to load prior map from " << path;
+    return false;
+  }
+  // register the prior frames for place recognition so we can relocalise
+  frontend_.addPriorMapFrames(priorFrames);
+  LOG(INFO) << "Loaded prior map from " << path << " ("
+            << priorFrames.size() << " frames).";
+  return true;
 }
 
 }  // namespace okvis

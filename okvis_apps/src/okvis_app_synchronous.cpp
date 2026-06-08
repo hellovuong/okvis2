@@ -71,17 +71,21 @@ int main(int argc, char **argv)
   FLAGS_stderrthreshold = 0;  // INFO: 0, WARNING: 1, ERROR: 2, FATAL: 3
   FLAGS_colorlogtostderr = 1;
 
-  if (argc != 3 && argc != 4) {
+  if (argc < 3) {
     LOG(ERROR)<<
-    "Usage: ./" << argv[0] << " configuration-yaml-file dataset-folder [-rpg]/[-rgb]";
+    "Usage: ./" << argv[0]
+    << " configuration-yaml-file dataset-folder [-rpg] [--load-map <prior-map.db>]";
     return EXIT_FAILURE;
   }
 
   okvis::Duration deltaT(0.0);
   bool rpg = false;
-  if (argc == 4) {
-    if(strcmp(argv[3], "-rpg")==0) {
+  std::string loadMapPath; // optional prior map to load as a frozen anchor
+  for (int a = 3; a < argc; ++a) {
+    if (strcmp(argv[a], "-rpg") == 0) {
       rpg = true;
+    } else if (strcmp(argv[a], "--load-map") == 0 && a + 1 < argc) {
+      loadMapPath = argv[++a];
     }
   }
 
@@ -117,6 +121,14 @@ int main(int argc, char **argv)
   okvis::ThreadedSlam estimator(parameters, dBowVocDir);
   estimator.setBlocking(true);
 
+  // optionally load a prior map (frozen anchor) for relocalisation & continuous mapping
+  if(!loadMapPath.empty()) {
+    if(!estimator.loadMap(loadMapPath)) {
+      LOG(ERROR) << "Could not load prior map " << loadMapPath;
+      return EXIT_FAILURE;
+    }
+  }
+
   // write logs
   std::string mode = "slam";
   if(!parameters.estimator.do_loop_closures) {
@@ -132,7 +144,7 @@ int main(int argc, char **argv)
                   std::placeholders::_1, std::placeholders::_2, std::placeholders::_3,
                   std::placeholders::_4));
   estimator.setFinalTrajectoryCsvFile(path+"/okvis2-" + mode + "-final_trajectory.csv");
-  estimator.setMapCsvFile(path+"/okvis2-" + mode + "-final_map.csv");
+  estimator.setMapCsvFile(path+"/okvis2-" + mode + "-final_map.db");
 
   // connect reader to estimator
   datasetReader->setImuCallback(

@@ -219,6 +219,30 @@ bool Frontend::loadComponent(std::string filename,
   return true;
 }
 
+bool Frontend::addPriorMapFrames(const std::map<StateId, MultiFramePtr> &priorFrames)
+{
+  for (const auto &entry : priorFrames) {
+    const MultiFramePtr &multiFrame = entry.second;
+    // assemble per-keypoint BRISK descriptors across all cameras
+    std::vector<std::vector<uchar>> features(multiFrame->numKeypoints());
+    int offset = 0;
+    for (size_t im = 0; im < numCameras_; ++im) {
+      for (size_t k = 0; k < multiFrame->numKeypoints(im); ++k) {
+        features.at(size_t(k + offset)).resize(48); // TODO: get 48 from feature
+        memcpy(features.at(size_t(k + offset)).data(),
+               multiFrame->keypointDescriptor(im, k), 48 * sizeof(uchar));
+      }
+      offset += int(multiFrame->numKeypoints(im));
+    }
+    // add to the main place-recognition database under the (kept) prior state id
+    dBow_->database.add(features);
+    dBow_->poseIds.push_back(multiFrame->id());
+  }
+  LOG(INFO) << "registered " << priorFrames.size()
+            << " prior-map frames for place recognition.";
+  return true;
+}
+
 // Detection and descriptor extraction on a per image basis.
 bool Frontend::detectAndDescribe(size_t cameraIndex, std::shared_ptr<okvis::MultiFrame> frameOut,
                                  const okvis::kinematics::Transformation& T_WC,
@@ -870,6 +894,45 @@ bool Frontend::dataAssociationAndInitialization(
 
         const std::shared_ptr<const MultiFrame> oldFrame = estimator.multiFrame(id.first);
         /// \todo move to separate thread
+
+        // prior-map relocalisation: the matched frame belongs to a loaded prior
+        // map (frozen anchor). Rigidly align the live session onto the prior map
+        // once; afterwards live frames match prior landmarks directly via matchToMap.
+        if(estimator.isPriorFrame(id.first)) {
+          if(estimator.isPriorMapAligned()) {
+            continue; // already aligned to the prior map
+          }
+          kinematics::Transformation T_Sold_Snew;
+          Eigen::Matrix<double, 6, 6> H;
+          if(!verifyRecognisedPlace(estimator, params, framesInOut, oldFrame,
+                                    T_Sold_Snew, H, 10)) {
+            attempts++;
+            continue;
+          }
+          attempts++;
+          if(estimator.alignToPriorMap(id.first, StateId(framesInOut->id()), T_Sold_Snew, H)) {
+            // match the current frame against the now-aligned prior landmarks
+            switch (distortionType) {
+              case okvis::cameras::NCameraSystem::RadialTangential:
+                matchToMap<cameras::PinholeCamera<cameras::RadialTangentialDistortion>>(
+                    estimator, params, framesInOut->id());
+                break;
+              case okvis::cameras::NCameraSystem::Equidistant:
+                matchToMap<cameras::PinholeCamera<cameras::EquidistantDistortion>>(
+                    estimator, params, framesInOut->id());
+                break;
+              case okvis::cameras::NCameraSystem::RadialTangential8:
+                matchToMap<cameras::PinholeCamera<cameras::RadialTangentialDistortion8>>(
+                    estimator, params, framesInOut->id());
+                break;
+              default:
+                OKVIS_THROW(Exception, "Unsupported distortion type.")
+                break;
+            }
+            *asKeyframe = doWeNeedANewKeyframe(estimator, framesInOut);
+          }
+          break;
+        }
 
         // check if already existing loop closure or matching against current frame
         if(!estimator.isPoseGraphFrame(id.first)) {

@@ -350,6 +350,12 @@ class ViSlamBackend //: public VioBackendInterface
     return auxiliaryStates_.at(id).isPlaceRecognitionFrame;
   }
 
+  /// \brief Is this a frame from a loaded prior map (frozen anchor)?
+  bool isPriorFrame(StateId id) const { return priorFrames_.count(id) > 0; }
+
+  /// \brief Has the live session already been rigidly aligned onto the prior map?
+  bool isPriorMapAligned() const { return priorMapAligned_; }
+
   /**
    * @brief The tracking quality w.r.t. the map:
    * fraction of the image pixels covered with matches.
@@ -384,10 +390,20 @@ class ViSlamBackend //: public VioBackendInterface
     return auxiliaryStates_.at(id).recentLoopClosureFrames;
   }
 
-  /// \brief The ID of the most recent (current) frame.
-  /// \return The ID.
+  /// \brief The ID of the most recent (current) LIVE frame.
+  /// \return The ID, or an uninitialised StateId if no live frame exists yet
+  ///         (i.e. only a loaded prior map is present). Prior-map frames are
+  ///         never returned here: they are a visual anchor, not part of the
+  ///         live (inertial) state progression.
   StateId currentStateId() const {
-    return realtimeGraph_.currentStateId();
+    if(realtimeGraph_.states_.empty()) {
+      return StateId();
+    }
+    const StateId id = realtimeGraph_.states_.rbegin()->first;
+    if(id.value() <= priorMaxStateId_.value()) {
+      return StateId(); // only prior-map frames so far -> no live state
+    }
+    return id;
   }
 
   /// \brief The ID of the current keyframe, i.e. the one with most overlapping matches.
@@ -557,9 +573,41 @@ class ViSlamBackend //: public VioBackendInterface
                  double extrinsicsOrientationUncertainty = 0.0,
                  int numThreads = 1, bool verbose = false);
 
-  /// \brief Save the map to CSV.
-  /// \param path CSV file path.
+  /// \brief Save the map (full re-optimisable graph) to a SQLite database.
+  /// \param path Map file path (extension normalised to .db).
   bool saveMap(std::string path);
+
+  /// \brief Load a prior map from a SQLite database into the live estimator
+  ///        graphs as a frozen anchor (multi-session / continuous mapping).
+  ///
+  /// The prior states/landmarks keep their ids (1..N) and are frozen
+  /// (SetParameterBlockConstant) and never marginalised. The live session
+  /// initialises fresh just above the prior ids and is rigidly aligned onto the
+  /// prior map upon relocalisation (see alignToPriorMap()). The loaded
+  /// multiframes are returned in \p priorFramesOut so the frontend can register
+  /// them for place recognition.
+  /// \return True on success.
+  bool loadMap(const std::string & path, const cameras::NCameraSystem & nCameraSystem,
+               const ImuParameters & imuParameters,
+               std::map<StateId, MultiFramePtr> & priorFramesOut);
+
+  /// \brief Is a prior map currently loaded?
+  bool hasPriorMap() const { return priorMaxStateId_.value() > 0; }
+
+  /// \brief The frames belonging to the loaded prior map (frozen anchor).
+  const std::set<StateId> & priorFrames() const { return priorFrames_; }
+
+  /// \brief Rigidly align the live session onto the prior map upon a successful
+  ///        relocalisation against a prior frame, then add a relative-pose
+  ///        constraint and trigger full-graph optimisation.
+  /// \param priorFrame      The matched prior frame (id <= priorMaxStateId_).
+  /// \param liveFrame       The current live frame that recognised it.
+  /// \param T_Sprior_Slive  Relative transform from place recognition.
+  /// \param information     Associated 6x6 information matrix.
+  /// \return True if the alignment was applied.
+  bool alignToPriorMap(StateId priorFrame, StateId liveFrame,
+                       const kinematics::Transformation & T_Sprior_Slive,
+                       const Eigen::Matrix<double, 6, 6> & information);
 
   /// \brief Check if currently closing loop.
   /// \return True if it is.
@@ -652,6 +700,14 @@ private:
   size_t currentComponentIdx_ = 0; ///< The index of the current component.
 
   std::set<StateId> loopClosureFrames_; ///< All the current loop closure frames.
+
+  /// @name Prior map (frozen anchor for multi-session / continuous mapping).
+  ///@{
+  std::set<StateId> priorFrames_;       ///< States loaded from a prior map (frozen, kept resident).
+  StateId priorMaxStateId_;             ///< Highest prior state id (0 = no prior map loaded).
+  LandmarkId priorMaxLandmarkId_;       ///< Highest prior landmark id (0 = no prior map loaded).
+  bool priorMapAligned_ = false;        ///< Has the live session been aligned onto the prior map yet?
+  ///@}
 
   ///
   std::set<StateId> imuFrames_; ///< All the current IMU frames.

@@ -75,8 +75,13 @@ bool ViSlamBackend::addStates(MultiFramePtr multiFrame, const ImuMeasurementDequ
   AuxiliaryState auxiliaryState;
   auxiliaryState.isImuFrame = true;
   auxiliaryState.isKeyframe = asKeyframe;
-  if(multiFrames_.empty()) {
-    // initialise
+  // The live session is uninitialised when there is no live state yet. With a
+  // prior map loaded, the graph already holds the prior states (ids 1..N) so we
+  // must compare against priorMaxStateId_ rather than checking for an empty graph.
+  const bool liveUninitialised = realtimeGraph_.states_.empty()
+      || realtimeGraph_.states_.rbegin()->first.value() <= priorMaxStateId_.value();
+  if(liveUninitialised) {
+    // initialise (fresh live world frame; id is 1, or priorMax+1 when a prior map is loaded)
     OKVIS_ASSERT_TRUE(Exception, !isLoopClosing_, "not allowed")
     const StateId id = realtimeGraph_.addStatesInitialise(multiFrame->timestamp(), imuMeasurements,
                                                           multiFrame->cameraSystem());
@@ -87,7 +92,7 @@ bool ViSlamBackend::addStates(MultiFramePtr multiFrame, const ImuMeasurementDequ
     auxiliaryState.loopId = id;
     auxiliaryStates_[id] = auxiliaryState; // for internal book-keeping
     imuFrames_.insert(id);
-    return (id.value()==1 && id.isInitialised());
+    return id.isInitialised();
   } else {
     const StateId id = realtimeGraph_.addStatesPropagate(multiFrame->timestamp(), imuMeasurements,
                                                          asKeyframe);
@@ -1925,75 +1930,180 @@ void ViSlamBackend::doFinalBa(
 
 bool ViSlamBackend::saveMap(std::string path)
 {
-  // save in g2o format
-  std::string g2oPath = path.substr(0, path.size() - 4) + ".g2o";
-  Component component(fullGraph_.imuParametersVec_[0],
-                      multiFrames_.at(StateId(1))->cameraSystem(),
-                      fullGraph_,
-                      multiFrames_);
-  component.save(g2oPath);
-
-  // ... and as own format
-  std::ofstream file(path);
-  if(!file.good()) {
+  if (multiFrames_.empty()) {
+    LOG(WARNING) << "saveMap: no frames to save.";
     return false;
   }
-  
-  std::ios init(nullptr);
-  init.copyfmt(file);
-  
-  // first we write all the landmarks
-  file << "landmarks:" << std::endl;
-  for(const auto & landmark : fullGraph_.landmarks_) {
-    if(landmark.second.quality > 0.001) {
-      // ID
-      file << landmark.first.value() << ",";
-      // save position
-      Eigen::Vector4d hposition = landmark.second.hPoint->estimate();
-      Eigen::Vector3d position = hposition.head<3>()/hposition[3];
-      file << position[0] << "," << position[1] << "," << position[2];
-      file << std::endl;
-    }
+
+  // Canonical, re-loadable map is a single SQLite database holding the full graph.
+  // Normalise the extension to .db (callers historically passed a .csv path).
+  std::string dbPath = path;
+  const size_t dot = dbPath.find_last_of('.');
+  if (dot != std::string::npos) {
+    dbPath = dbPath.substr(0, dot);
   }
-  
-  // next write the frames with keypoint descriptors
-  fullGraph_.computeCovisibilities();
-  for(const auto & state : fullGraph_.states_) {
-    file << "frame: " << state.first.value() << ", covisibilities: ";
-    std::vector<std::pair<StateId, int>> covisibilities;
-    for(const auto & state2 : fullGraph_.states_) {
-      int c = fullGraph_.covisibilities(state.first, state2.first);
-      if(c > 0) {
-        covisibilities.push_back(std::make_pair(state2.first, c));
-      }
-    }
-    std::sort(covisibilities.begin(), covisibilities.end(), 
-         [](const std::pair<StateId, int> & left, const std::pair<StateId, int> & right){
-           return left.second > right.second;});
-    for(const auto & covisibility : covisibilities) {
-      file << covisibility.first.value() << " ";
-    }
-    file << std::endl;
-    for(const auto & obs : state.second.observations) {
-      const auto & landmark = fullGraph_.landmarks_.at(obs.second.landmarkId);
-      if(landmark.quality > 0.001) {
-        file << obs.first.keypointIndex << "," << obs.second.landmarkId.value() << ","; // kpt&lm ID
-        Eigen::Vector4d hposition = landmark.hPoint->estimate();
-        Eigen::Vector3d position = hposition.head<3>()/hposition[3];
-        file << position[0] << "," << position[1] << "," << position[2] << ","; // lm 3D pos redund.
-        // retrieve descriptor
-        const unsigned char* descriptor =
-            multiFrames_.at(state.first)->keypointDescriptor(
-              obs.first.cameraIndex, obs.first.keypointIndex);
-        for(size_t i=0; i<48; ++i) {
-          file << std::setfill('0') << std::setw(2) << std::hex << uint32_t(descriptor[i]);
-        }
-        file.copyfmt(init); // reset formatting
-        file << std::endl;
-      }
-    }
+  dbPath += ".db";
+
+  Component component(fullGraph_.imuParametersVec_[0],
+                      multiFrames_.begin()->second->cameraSystem(),
+                      fullGraph_,
+                      multiFrames_);
+  if (!component.save(dbPath)) {
+    LOG(ERROR) << "saveMap: failed to write " << dbPath;
+    return false;
+  }
+  LOG(INFO) << "saved map to " << dbPath;
+  return true;
+}
+
+bool ViSlamBackend::loadMap(const std::string & path,
+                            const cameras::NCameraSystem & nCameraSystem,
+                            const ImuParameters & imuParameters,
+                            std::map<StateId, MultiFramePtr> & priorFramesOut)
+{
+  OKVIS_ASSERT_TRUE(Exception, realtimeGraph_.states_.empty(),
+                    "loadMap must be called before any live state is added")
+
+  // Load the prior graph directly into BOTH estimator graphs, sharing the same
+  // multiframes (two ceres problems cannot be merged, so we replay the load).
+  // VISUAL-ONLY: cross-session IMU is never shared -- inertial estimation
+  // (preintegration/propagation/bias) stays current-session only. So we do NOT
+  // recreate the prior IMU edges (loadImuEdges = false).
+  Component loader(imuParameters, nCameraSystem);
+  if(!loader.loadInto(path, realtimeGraph_, multiFrames_, /*loadImuEdges=*/false)) {
+    return false;
+  }
+  if(!loader.loadInto(path, fullGraph_, multiFrames_, /*loadImuEdges=*/false)) {
+    return false;
+  }
+  if(realtimeGraph_.states_.empty()) {
+    LOG(WARNING) << "loadMap: prior map has no states.";
+    return false;
   }
 
+  // record prior id ranges
+  priorMaxStateId_ = realtimeGraph_.states_.rbegin()->first;
+  priorMaxLandmarkId_ = realtimeGraph_.landmarks_.empty() ?
+        LandmarkId(0) : realtimeGraph_.landmarks_.rbegin()->first;
+
+  // Register prior frames as a frozen anchor: they are keyframes for place
+  // recognition, but deliberately NOT inserted into keyFrames_/imuFrames_ so the
+  // marginalisation strategy never selects them for elimination.
+  for(const auto & s : realtimeGraph_.states_) {
+    const StateId id = s.first;
+    priorFrames_.insert(id);
+    AuxiliaryState aux;
+    aux.isKeyframe = true;
+    aux.isImuFrame = false;
+    aux.isPoseGraphFrame = false;
+    aux.isPlaceRecognitionFrame = true;
+    aux.loopId = id;
+    auxiliaryStates_[id] = aux;
+    // book-keeping for trajectory interpolation (mirror addStatesInitialise)
+    ViGraph::AnyState anyState;
+    anyState.timestamp = s.second.timestamp;
+    anyState.T_Sk_S = kinematics::Transformation::Identity();
+    anyState.v_Sk = Eigen::Vector3d::Zero();
+    realtimeGraph_.anyState_[id] = anyState;
+    fullGraph_.anyState_[id] = anyState;
+    priorFramesOut[id] = multiFrames_.at(id);
+  }
+
+  // Freeze prior poses, speed/biases and extrinsics in both graphs. The prior
+  // keyframe poses are a stable gauge (they no longer have IMU to constrain them);
+  // the prior speed/bias blocks are inert without IMU edges. Prior LANDMARKS are
+  // deliberately left VARIABLE so live observations refine them over runs
+  // (life-long visual mapping -- the map does not go out of date).
+  realtimeGraph_.freezePosesUntil(priorMaxStateId_);
+  fullGraph_.freezePosesUntil(priorMaxStateId_);
+  realtimeGraph_.freezeSpeedAndBiasesUntil(priorMaxStateId_);
+  fullGraph_.freezeSpeedAndBiasesUntil(priorMaxStateId_);
+  realtimeGraph_.freezeExtrinsicsUntil(priorMaxStateId_);
+  fullGraph_.freezeExtrinsicsUntil(priorMaxStateId_);
+
+  // Bias continuity: reuse the prior session's final IMU bias as the initial bias
+  // for the new session. addStatesInitialise() seeds the first live state's bias
+  // from imuParametersVec_[0].g0/a0, so we overwrite those with the loaded values.
+  {
+    const SpeedAndBias lastSb =
+        realtimeGraph_.states_.at(priorMaxStateId_).speedAndBias->estimate();
+    const Eigen::Vector3d g0 = lastSb.segment<3>(3); // gyro bias
+    const Eigen::Vector3d a0 = lastSb.tail<3>();      // accel bias
+    if(!realtimeGraph_.imuParametersVec_.empty()) {
+      realtimeGraph_.imuParametersVec_[0].g0 = g0;
+      realtimeGraph_.imuParametersVec_[0].a0 = a0;
+    }
+    if(!fullGraph_.imuParametersVec_.empty()) {
+      fullGraph_.imuParametersVec_[0].g0 = g0;
+      fullGraph_.imuParametersVec_[0].a0 = a0;
+    }
+    LOG(INFO) << "loadMap: seeded live init bias from prior session: g0="
+              << g0.transpose() << " a0=" << a0.transpose();
+  }
+
+  LOG(INFO) << "loadMap: loaded prior visual map with " << priorFrames_.size()
+            << " frames and " << realtimeGraph_.landmarks_.size()
+            << " landmarks (frozen poses, updatable landmarks, no cross-session IMU).";
+  return true;
+}
+
+bool ViSlamBackend::alignToPriorMap(StateId priorFrame, StateId liveFrame,
+                                    const kinematics::Transformation & T_Sprior_Slive,
+                                    const Eigen::Matrix<double, 6, 6> & information)
+{
+  (void)information; // visual-only: consistency comes from reprojection factors, not a pose-graph edge
+  if(!hasPriorMap()) {
+    return false;
+  }
+  if(realtimeGraph_.states_.count(priorFrame) == 0
+     || realtimeGraph_.states_.count(liveFrame) == 0) {
+    return false;
+  }
+
+  // current estimates (prior frame is in the prior world frame, live in the live world frame)
+  const kinematics::Transformation T_Wp_Sprior = realtimeGraph_.pose(priorFrame);
+  const kinematics::Transformation T_Wl_Slive = realtimeGraph_.pose(liveFrame);
+  // desired live-frame pose, expressed in the prior world frame:
+  const kinematics::Transformation T_Wp_Slive = T_Wp_Sprior * T_Sprior_Slive;
+  // rigid world alignment mapping live world -> prior world:
+  const kinematics::Transformation T_Wp_Wl = T_Wp_Slive * T_Wl_Slive.inverse();
+
+  // Apply the rigid transform to ALL live states (id > priorMaxStateId_); prior
+  // frames stay fixed.
+  for(auto & s : realtimeGraph_.states_) {
+    if(s.first.value() <= priorMaxStateId_.value()) {
+      continue;
+    }
+    const kinematics::Transformation T_Wp_Sk = T_Wp_Wl * s.second.pose->estimate();
+    SpeedAndBias sb = s.second.speedAndBias->estimate();
+    sb.head<3>() = T_Wp_Wl.C() * sb.head<3>();
+    realtimeGraph_.setPose(s.first, T_Wp_Sk);
+    fullGraph_.setPose(s.first, T_Wp_Sk);
+    realtimeGraph_.setSpeedAndBias(s.first, sb);
+    fullGraph_.setSpeedAndBias(s.first, sb);
+  }
+  // ... and to all live landmarks; prior landmarks stay fixed.
+  for(auto & lm : realtimeGraph_.landmarks_) {
+    if(lm.first.value() <= priorMaxLandmarkId_.value()) {
+      continue;
+    }
+    const Eigen::Vector4d hp = T_Wp_Wl * lm.second.hPoint->estimate();
+    const bool init = lm.second.hPoint->initialized();
+    realtimeGraph_.setLandmark(lm.first, hp, init);
+    fullGraph_.setLandmark(lm.first, hp, init);
+  }
+
+  // VISUAL-ONLY: do NOT add a pose-graph constraint and do NOT trigger a
+  // full-graph optimisation (that would route the prior, IMU-less frames through
+  // the inertial/pose-graph machinery and drop the sole live frame on the first
+  // relocalisation). The one-shot rigid alignment above only bootstraps the live
+  // pose into the prior world frame so that matchToMap can project the prior
+  // landmarks; the live↔prior consistency is then maintained by the reprojection
+  // observations matchToMap adds to the prior landmarks every subsequent frame.
+  priorMapAligned_ = true;
+
+  LOG(INFO) << "RELOCALISED live frame " << liveFrame.value()
+            << " onto prior frame " << priorFrame.value() << ".";
   return true;
 }
 
@@ -2371,6 +2481,11 @@ void ViSlamBackend::clear()
 
   imuFrames_.clear(); // All the current IMU frames.
   keyFrames_.clear(); // All the current keyframes.
+
+  priorFrames_.clear(); // Frames from a loaded prior map.
+  priorMaxStateId_ = StateId(0);
+  priorMaxLandmarkId_ = LandmarkId(0);
+  priorMapAligned_ = false;
 
   needsFullGraphOptimisation_ = false;
   isLoopClosing_ = false;

@@ -4,6 +4,7 @@ find_package(Eigen3 REQUIRED)
 find_package(Glog REQUIRED)
 find_package(OpenCV REQUIRED core imgcodecs imgproc)
 find_package(OpenMP QUIET)
+find_package(SQLite3 REQUIRED)
 if(USE_SYSTEM_CERES)
   find_package(Ceres REQUIRED)
 endif()
@@ -74,6 +75,7 @@ target_link_libraries(${LIB_NAME}
     okvis::Util
   PRIVATE
     ${GLOG_LIBRARIES}
+    SQLite::SQLite3
 )
 target_compile_features(${LIB_NAME} PUBLIC cxx_std_${OKVIS_CXX_STANDARD})
 target_compile_options(${LIB_NAME}

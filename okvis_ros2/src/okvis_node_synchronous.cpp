@@ -155,7 +155,7 @@ int main(int argc, char **argv)
   // setup publishing
   publisher.setCsvFile(path + "/okvis2-" + mode + "-live_trajectory.csv", rpg);
   estimator.setFinalTrajectoryCsvFile(path+"/okvis2-" + mode + "-final_trajectory.csv", rpg);
-  estimator.setMapCsvFile(path+"/okvis2-" + mode + "-final_map.csv");
+  estimator.setMapCsvFile(path+"/okvis2-" + mode + "-final_map.db");
   estimator.setOptimisedGraphCallback(
     std::bind(&okvis::Publisher::publishEstimatorUpdate, &publisher,
               std::placeholders::_1, std::placeholders::_2,

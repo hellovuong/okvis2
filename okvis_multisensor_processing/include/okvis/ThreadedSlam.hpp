@@ -158,8 +158,15 @@ class ThreadedSlam : public ViInterface {
   /// \brief Performs a final Bundle Adjustment.
   void doFinalBa();
 
-  /// \brief Save the map to CSV.
+  /// \brief Save the map (full re-optimisable graph) to a SQLite database.
   bool saveMap();
+
+  /// \brief Load a prior map (SQLite database) as a frozen anchor for
+  ///        relocalisation and continuous mapping. Must be called once, before
+  ///        any images/IMU measurements are processed.
+  /// \param path The prior map .db file.
+  /// \return True on success.
+  bool loadMap(const std::string & path);
 
   /// \}
 

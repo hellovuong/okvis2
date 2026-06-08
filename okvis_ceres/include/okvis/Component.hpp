@@ -60,9 +60,22 @@ class Component
   /// \brief Default constructor
   Component(const ImuParameters &imuParameters, const cameras::NCameraSystem& nCameraSystem);
 
-  /// \brief Load this component.
+  /// \brief Load this component (into an owned graph).
   /// \return True on success.
   bool load(const std::string &path);
+
+  /// \brief Load a map from \p path directly into a caller-provided graph and
+  ///        multiframe map. Used to inject a prior map into the live estimator
+  ///        graphs (realtime + full) so it becomes one coherent graph.
+  /// \param path The SQLite map file.
+  /// \param graph The graph to populate (its ceres problem gets the parameter/residual blocks).
+  /// \param frames The multiframe map; reused if already populated (so several graphs can share frames).
+  /// \param loadImuEdges If false, the IMU edges/measurements are NOT recreated.
+  ///        Used when loading a prior map as a visual-only anchor: cross-session
+  ///        IMU is never shared; inertial estimation stays current-session only.
+  /// \return True on success.
+  bool loadInto(const std::string &path, ViGraphEstimator &graph,
+                std::map<StateId, MultiFramePtr> &frames, bool loadImuEdges = true);
 
   /// \brief Save this component.
   /// \return True on success.
