@@ -489,15 +489,18 @@ class ViGraph
   bool setExtrinsics(
       StateId id, uchar camIdx, const kinematics::TransformationCacheless & extrinsics) const;
 
-  /// \brief Sets all extrinsics to be optimised.
+  /// \brief Sets the extrinsics (shared blocks) of a state to be optimised.
+  /// \param id State whose extrinsics blocks to make variable (e.g. the first live
+  ///        state -- NOT a prior-map state, whose extrinsics must stay frozen).
   /// \return True on success.
-  bool setExtrinsicsVariable();
+  bool setExtrinsicsVariable(StateId id);
 
-  /// \brief Gives all extrinsice a pose prior.
+  /// \brief Gives the extrinsics (shared blocks) of a state a pose prior.
   /// \param posStd Position uncertainty standard deviation.
   /// \param rotStd Orientation uncertainty standard deviation.
+  /// \param id State whose extrinsics blocks to constrain.
   /// \return True on success.
-  bool softConstrainExtrinsics(double posStd, double rotStd);
+  bool softConstrainExtrinsics(double posStd, double rotStd, StateId id);
 
   // get/set ceres stuff
   /**
@@ -530,12 +533,14 @@ class ViGraph
   /// \return True on success.
   bool setOptimisationTimeLimit(double timeLimit, int minIterations);
 
-  /// \brief Removes landmarks that are not observed.
+  /// \brief Removes landmarks that are not observed. Fixed landmarks (constant
+  ///        prior-map layer) are never removed, regardless of observation count.
   /// \return The number of landmarks removed.
   int cleanUnobservedLandmarks(
       std::map<LandmarkId, std::set<KeypointIdentifier>> *removed = nullptr);
 
   /// \brief Update landmark quality and initialisation status using current graph/estimates.
+  ///        Fixed landmarks (constant prior-map layer) are left untouched.
   void updateLandmarks();
 
 protected:

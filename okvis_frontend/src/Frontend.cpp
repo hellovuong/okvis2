@@ -1529,6 +1529,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     std::vector<size_t> ctrs(num_matching_threads);
     std::vector<double> reprErrors(num_matching_threads);
 
+
     std::vector<std::thread*> threads(num_matching_threads, nullptr);
     for(size_t t = 0; t<num_matching_threads; ++t) {
       threads[t] = new std::thread(
@@ -1750,7 +1751,6 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
         false, true, isInitialized_);
   }
   //OKVIS_ASSERT_TRUE(Exception, estimator.areLandmarksInFrontOfCameras(), "after match to map")
-
   return ctr;
 }
 

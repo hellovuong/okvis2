@@ -353,6 +353,14 @@ class ViSlamBackend //: public VioBackendInterface
   /// \brief Is this a frame from a loaded prior map (frozen anchor)?
   bool isPriorFrame(StateId id) const { return priorFrames_.count(id) > 0; }
 
+  /// \brief Is this landmark part of the loaded prior map (immutable online)?
+  bool isPriorLandmark(LandmarkId id) const {
+    return id.isInitialised() && id.value() <= priorMaxLandmarkId_.value();
+  }
+
+  /// \brief First live (non-prior) state ID; StateId(1) when no prior map is loaded.
+  StateId firstLiveStateId() const { return StateId(priorMaxStateId_.value() + 1); }
+
   /// \brief Has the live session already been rigidly aligned onto the prior map?
   bool isPriorMapAligned() const { return priorMapAligned_; }
 

@@ -36,6 +36,7 @@
  * @author Stefan Leutenegger
  */
 
+#include <cmath>
 #include <fstream>
 #include <string>
 #include <iostream>
@@ -236,6 +237,9 @@ LandmarkId ViSlamBackend::addLandmark(const Eigen::Vector4d &homogeneousPoint, b
 
 bool ViSlamBackend::setLandmark(LandmarkId landmarkId, const Eigen::Vector4d & landmark,
                                 bool isInitialised) {
+  if(isPriorLandmark(landmarkId)) {
+    return false; // the prior-map layer is immutable online
+  }
   bool success = realtimeGraph_.setLandmark(landmarkId, landmark, isInitialised);
   if(isLoopClosing_ || isLoopClosureAvailable_) {
     touchedLandmarks_.insert(landmarkId);
@@ -259,6 +263,9 @@ bool ViSlamBackend::setLandmarkClassification(LandmarkId landmarkId, int classif
 
 bool ViSlamBackend::setObservationInformation(
     StateId stateId, size_t camIdx, size_t keypointIdx, const Eigen::Matrix2d & information) {
+  if(isPriorFrame(stateId)) {
+    return false; // prior observations are persisted -- keep them immutable online
+  }
   KeypointIdentifier kid(stateId.value(), camIdx, keypointIdx);
   if(isLoopClosing_ || isLoopClosureAvailable_) {
     touchedLandmarks_.insert(realtimeGraph_.observations_.at(kid).landmarkId);
@@ -311,6 +318,20 @@ bool ViSlamBackend::convertToPoseGraphMst(const std::set<StateId> & framesToConv
   realtimeGraph_.convertToPoseGraphMst(
         framesToConvert, framesToConsider, &poseGraphEdges, &removedTwoPoseErrors,
         &removedObservations);
+
+  // When a converted frame has multiple MST edges (e.g. due to high prior-landmark
+  // covisibility inflating numEdges), convertToPoseGraphMst keeps some observations as
+  // duplications in TwoPoseLinks but doesn't remove the direct residuals. Force-remove
+  // them here: TwoPoseLink::addObservation clones the error term, so removing the direct
+  // residual afterwards is safe and exactly mirrors the normal (single-edge) path.
+  for (const auto frameId : framesToConvert) {
+    auto& stateObs = realtimeGraph_.states_.at(frameId).observations;
+    while (!stateObs.empty()) {
+      const KeypointIdentifier kpId = stateObs.begin()->first;
+      removedObservations.push_back(kpId);
+      realtimeGraph_.removeObservation(kpId);
+    }
+  }
 
   // remember affected frames
   for (auto addedEdge : poseGraphEdges) {
@@ -424,6 +445,17 @@ void ViSlamBackend::eliminateImuFrames(size_t numImuFrames)
       components_.at(currentComponentIdx_).poseIds.insert(id);
       if(loopClosureFrames_.count(id)) {
         loopClosureFrames_.erase(id); // make sure the two sets are not intersecting
+      }
+      auxiliaryStates_.at(id).isImuFrame = false;
+    } else if (!realtimeGraph_.states_.at(id).previousImuLink.errorTerm) {
+      // No backward IMU link: this is the first live state after prior-map loading
+      // (added via addStatesInitialise, which creates no cross-session IMU chain).
+      // Cannot eliminate via ImuMerge — promote to keyframe instead.
+      imuFrames_.erase(id);
+      keyFrames_.insert(id);
+      components_.at(currentComponentIdx_).poseIds.insert(id);
+      if(loopClosureFrames_.count(id)) {
+        loopClosureFrames_.erase(id);
       }
       auxiliaryStates_.at(id).isImuFrame = false;
     } else {
@@ -800,6 +832,9 @@ void ViSlamBackend::optimiseRealtimeGraph(
     }
     if(onlyNewestState) {
       for(const auto & lm : realtimeGraph_.landmarks_) {
+        if(lm.second.hPoint->fixed()) {
+          continue; // permanently fixed (prior-map landmark) -- never make variable
+        }
         realtimeGraph_.problem_->SetParameterBlockVariable(lm.second.hPoint->parameters());
       }
     }
@@ -854,6 +889,9 @@ void ViSlamBackend::optimiseRealtimeGraph(
   if(!isLoopClosing_ && !isLoopClosureAvailable_) {
     for(auto iter = realtimeGraph_.landmarks_.begin(); iter != realtimeGraph_.landmarks_.end();
         ++iter) {
+      if(iter->second.hPoint->fixed()) {
+        continue; // constant (prior-map) landmark: identical in both graphs by construction
+      }
       fullGraph_.setLandmark(iter->first, iter->second.hPoint->estimate(),
                              iter->second.hPoint->initialized());
       fullGraph_.setLandmarkQuality(iter->first, iter->second.quality);
@@ -1359,13 +1397,17 @@ void ViSlamBackend::addLoopClosureFrame(StateId loopClosureFrameId,
         iter->second.loopId = oldestIdToSetVariable;
       }
 
-      // apply the freeze/unfreeze
+      // apply the freeze/unfreeze. The walk-back must never cross into the loaded
+      // prior map (immutable online), so it stops at the first LIVE entry rather
+      // than auxiliaryStates_.begin(). Without a prior map, upper_bound(StateId(0))
+      // == begin() and behaviour is unchanged.
+      const auto firstLiveAux = auxiliaryStates_.upper_bound(priorMaxStateId_);
       Time oldestT = fullGraph_.states_.at(oldestId).timestamp;
       int ctr = 0;
       for(auto iter = auxiliaryStates_.find(oldestIdToSetVariable); ; --iter) {
-        if(ctr == numPoseGraphFrames || iter==auxiliaryStates_.begin()) {
+        if(ctr == numPoseGraphFrames || iter==firstLiveAux) {
           while((oldestT - fullGraph_.timestamp(iter->first)).toSec()<minDeltaT) {
-            if(iter==auxiliaryStates_.begin()) {
+            if(iter==firstLiveAux) {
               break;
             }
             --iter;
@@ -1375,7 +1417,7 @@ void ViSlamBackend::addLoopClosureFrame(StateId loopClosureFrameId,
             // ensure we go back at least as far as lastFreeze
             if (iter->first > lastFreeze_) {
               while (iter->first > lastFreeze_) {
-                if (iter == auxiliaryStates_.begin()) {
+                if (iter == firstLiveAux) {
                   break;
                 }
                 --iter;
@@ -1384,16 +1426,16 @@ void ViSlamBackend::addLoopClosureFrame(StateId loopClosureFrameId,
           }
 
           fullGraph_.unfreezePosesFrom(iter->first);
-          if(iter!=auxiliaryStates_.begin()) {
+          if(iter!=firstLiveAux) {
             fullGraph_.freezePosesUntil(iter->first);
           }
           fullGraph_.unfreezeSpeedAndBiasesFrom(iter->first);
-          if(iter!=auxiliaryStates_.begin()) {
+          if(iter!=firstLiveAux) {
             fullGraph_.freezeSpeedAndBiasesUntil(iter->first);
           }
           break;
         }
-        if(iter==auxiliaryStates_.begin()) {
+        if(iter==firstLiveAux) {
           fullGraph_.unfreezePosesFrom(iter->first);
           fullGraph_.unfreezeSpeedAndBiasesFrom(iter->first);
           break;
@@ -1695,6 +1737,12 @@ int ViSlamBackend::cleanUnobservedLandmarks() {
 
 bool ViSlamBackend::mergeLandmark(const LandmarkId &fromId, const LandmarkId &intoId)
 {
+  if(isPriorLandmark(fromId)) {
+    // Never delete/move a prior landmark online. Merging a LIVE landmark INTO a
+    // prior one (intoId prior) is fine and desired; prior<->prior and prior->live
+    // dedupe is deferred to the offline maintenance merge.
+    return false;
+  }
   bool success = (realtimeGraph_.mergeLandmark(fromId, intoId, multiFrames_));
   // also reset associated keypoints
   auto observations = realtimeGraph_.landmarks_.at(intoId).observations;
@@ -1740,6 +1788,9 @@ int ViSlamBackend::mergeLandmarks(std::vector<LandmarkId> fromIds, std::vector<L
     // check if the change hasn't been indirectly applied already
     if(fromIds.at(i) == intoIds.at(i)) {
       continue; //this has already been done.
+    }
+    if(isPriorLandmark(fromIds.at(i))) {
+      continue; // never remove a prior landmark online (dedupe deferred to offline merge)
     }
 
     // now merge
@@ -1801,6 +1852,9 @@ void ViSlamBackend::doFinalBa(
   // convert all posegraph edges
   int i=0;
   for(const auto & state : fullGraph_.states_) {
+    if(isPriorFrame(state.first)) {
+      continue; // the prior map is immutable online; never expanded/re-optimised here
+    }
     if(state.second.twoPoseConstLinks.size()>0) {
       if(keyFrames_.count(state.first) == 0 && loopClosureFrames_.count(state.first) == 0) {
         keyFrames_.insert(state.first);
@@ -1814,9 +1868,11 @@ void ViSlamBackend::doFinalBa(
   fullGraph_.cleanUnobservedLandmarks();
   std::cout << "\rConstructing VI-BA problem... " << "100.00%" << std::endl;
 
-  // unfreeze
-  fullGraph_.unfreezePosesFrom(StateId(1));
-  fullGraph_.unfreezeSpeedAndBiasesFrom(StateId(1));
+  // unfreeze -- only the LIVE session; a loaded prior map stays frozen (it is a
+  // static localization layer online, only the offline maintenance merge may move it)
+  const StateId firstLiveId = firstLiveStateId();
+  fullGraph_.unfreezePosesFrom(firstLiveId);
+  fullGraph_.unfreezeSpeedAndBiasesFrom(firstLiveId);
 
   // make sure IMU errors are reintegrated if needed
   ceres::ImuError::redoPropagationAlways = true;
@@ -1826,16 +1882,19 @@ void ViSlamBackend::doFinalBa(
             << (verbose?"true)":"false)...") << std::endl;
   optimiseFullGraph(numIter, summary,numThreads, verbose);
 
-  // remove speed and bias prior
-  fullGraph_.removeSpeedAndBiasPrior(StateId(1));
+  // remove speed and bias prior (it sits on the first LIVE state; with a prior
+  // map loaded, state 1 is a prior frame and carries no such prior)
+  fullGraph_.removeSpeedAndBiasPrior(firstLiveId);
 
   // remove extrinsics fixation
   if(extrinsicsPositionUncertainty > 0.0 && extrinsicsOrientationUncertainty > 0.0) {
     std::cout << "Running optimisation again without priors & fixation (verbose="
               << (verbose?"true)":"false)...") << std::endl;
-    fullGraph_.setExtrinsicsVariable();
+    // operate on the first LIVE state's (shared) extrinsics blocks -- with a prior
+    // map loaded, states_.begin() would be a prior frame whose extrinsics are frozen
+    fullGraph_.setExtrinsicsVariable(firstLiveId);
     fullGraph_.softConstrainExtrinsics(
-          extrinsicsPositionUncertainty, extrinsicsOrientationUncertainty);
+          extrinsicsPositionUncertainty, extrinsicsOrientationUncertainty, firstLiveId);
   } else {
     std::cout << "Running optimisation again without priors (verbose="
               << (verbose?"true)":"false)...") << std::endl;
@@ -2009,17 +2068,23 @@ bool ViSlamBackend::loadMap(const std::string & path,
     priorFramesOut[id] = multiFrames_.at(id);
   }
 
-  // Freeze prior poses, speed/biases and extrinsics in both graphs. The prior
-  // keyframe poses are a stable gauge (they no longer have IMU to constrain them);
-  // the prior speed/bias blocks are inert without IMU edges. Prior LANDMARKS are
-  // deliberately left VARIABLE so live observations refine them over runs
-  // (life-long visual mapping -- the map does not go out of date).
+  // Freeze the ENTIRE prior in both graphs: poses, speed/biases, extrinsics AND
+  // landmarks. Online, the prior map is a STATIC localization layer -- live poses
+  // get reprojection factors against constant prior landmarks (added by
+  // matchToMap), so a live session can never modify (or corrupt) the prior. The
+  // map is only updated by the offline maintenance merge at the session boundary,
+  // where everything is made variable under a proper gauge (see
+  // docs/improvement-plan/track-2b-lifelong-architecture.md).
   realtimeGraph_.freezePosesUntil(priorMaxStateId_);
   fullGraph_.freezePosesUntil(priorMaxStateId_);
   realtimeGraph_.freezeSpeedAndBiasesUntil(priorMaxStateId_);
   fullGraph_.freezeSpeedAndBiasesUntil(priorMaxStateId_);
   realtimeGraph_.freezeExtrinsicsUntil(priorMaxStateId_);
   fullGraph_.freezeExtrinsicsUntil(priorMaxStateId_);
+  if(priorMaxLandmarkId_.isInitialised()) {
+    realtimeGraph_.freezeLandmarksUntil(priorMaxLandmarkId_);
+    fullGraph_.freezeLandmarksUntil(priorMaxLandmarkId_);
+  }
 
   // Bias continuity: reuse the prior session's final IMU bias as the initial bias
   // for the new session. addStatesInitialise() seeds the first live state's bias
@@ -2043,7 +2108,8 @@ bool ViSlamBackend::loadMap(const std::string & path,
 
   LOG(INFO) << "loadMap: loaded prior visual map with " << priorFrames_.size()
             << " frames and " << realtimeGraph_.landmarks_.size()
-            << " landmarks (frozen poses, updatable landmarks, no cross-session IMU).";
+            << " landmarks (static localization layer: frozen poses, constant landmarks,"
+            << " no cross-session IMU).";
   return true;
 }
 
@@ -2065,8 +2131,29 @@ bool ViSlamBackend::alignToPriorMap(StateId priorFrame, StateId liveFrame,
   const kinematics::Transformation T_Wl_Slive = realtimeGraph_.pose(liveFrame);
   // desired live-frame pose, expressed in the prior world frame:
   const kinematics::Transformation T_Wp_Slive = T_Wp_Sprior * T_Sprior_Slive;
-  // rigid world alignment mapping live world -> prior world:
-  const kinematics::Transformation T_Wp_Wl = T_Wp_Slive * T_Wl_Slive.inverse();
+  // full 6-DoF world alignment (diagnostics only):
+  const kinematics::Transformation T_Wp_Wl_6dof = T_Wp_Slive * T_Wl_Slive.inverse();
+
+  // 4-DoF projection: both world frames are gravity-aligned (z up), so the true
+  // inter-session transform has only yaw + translation. Project the rotation onto
+  // yaw about z and re-anchor the translation so the live sensor position maps
+  // EXACTLY onto the PnP-determined position in the prior world.
+  const Eigen::Matrix3d C6 = T_Wp_Wl_6dof.C();
+  const double yaw = std::atan2(C6(1, 0), C6(0, 0));
+  const Eigen::Quaterniond q_yaw(Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()));
+  const Eigen::Vector3d r_anchor = T_Wp_Slive.r() - q_yaw * T_Wl_Slive.r();
+  const kinematics::Transformation T_Wp_Wl(r_anchor, q_yaw);
+
+  // gravity-consistency diagnostic: the tilt discarded by the 4-DoF projection
+  // should be near zero if both sessions estimated gravity consistently.
+  const double tiltDeg = std::acos(std::min(
+        1.0, (C6 * Eigen::Vector3d::UnitZ()).dot(Eigen::Vector3d::UnitZ()))) * 180.0 / M_PI;
+  LOG(INFO) << "alignToPriorMap: discarded roll/pitch (gravity consistency): "
+            << tiltDeg << " deg";
+  if(tiltDeg > 2.0) {
+    LOG(WARNING) << "alignToPriorMap: large gravity inconsistency (" << tiltDeg
+                 << " deg) -- check IMU initialisation or relocalisation quality.";
+  }
 
   // Apply the rigid transform to ALL live states (id > priorMaxStateId_); prior
   // frames stay fixed.
@@ -2081,6 +2168,28 @@ bool ViSlamBackend::alignToPriorMap(StateId priorFrame, StateId liveFrame,
     fullGraph_.setPose(s.first, T_Wp_Sk);
     realtimeGraph_.setSpeedAndBias(s.first, sb);
     fullGraph_.setSpeedAndBias(s.first, sb);
+  }
+  // Re-anchor live-state prior FACTORS to the new world frame in BOTH graphs: the
+  // first live state carries the gauge pose prior from addStatesInitialise, whose
+  // measurement still points at the pre-alignment world -- left stale, it would
+  // yank the live trajectory back once the state unfreezes (e.g. in the final BA).
+  // The pose-prior information needs no rotation: its yaw component (the only
+  // anisotropic part) stays z-aligned under a yaw-only world rotation.
+  for(ViGraphEstimator * graph : {&realtimeGraph_, &fullGraph_}) {
+    for(auto & s : graph->states_) {
+      if(s.first.value() <= priorMaxStateId_.value()) {
+        continue;
+      }
+      if(s.second.posePrior.errorTerm) {
+        s.second.posePrior.errorTerm->setMeasurement(
+              T_Wp_Wl * s.second.posePrior.errorTerm->measurement());
+      }
+      if(s.second.speedAndBiasPrior.errorTerm) {
+        SpeedAndBias m = s.second.speedAndBiasPrior.errorTerm->measurement();
+        m.head<3>() = T_Wp_Wl.C() * m.head<3>();
+        s.second.speedAndBiasPrior.errorTerm->setMeasurement(m);
+      }
+    }
   }
   // ... and to all live landmarks; prior landmarks stay fixed.
   for(auto & lm : realtimeGraph_.landmarks_) {
@@ -2347,6 +2456,9 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
     // update landmarks
     for(auto iter = realtimeGraph_.landmarks_.begin();
         iter != realtimeGraph_.landmarks_.end(); ++iter) {
+      if(isPriorLandmark(iter->first)) {
+        continue; // the prior map stays rigid; only the live session is re-aligned
+      }
       // TODO: check if this is always right!
       Eigen::Vector4d hPointNew = T_Wnew_Wold_final * iter->second.hPoint->estimate();
       realtimeGraph_.setLandmark(iter->first, hPointNew, iter->second.hPoint->initialized());

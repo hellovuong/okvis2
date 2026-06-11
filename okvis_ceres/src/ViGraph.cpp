@@ -524,6 +524,9 @@ bool ViGraph::computeCovisibilities()
     if(iter->second.classification == 10 || iter->second.classification == 11) {
       continue;
     }
+    if(iter->second.hPoint->fixed()) {
+      continue; // prior-map landmark: constant, skip to avoid inflating MST covisibility
+    }
     auto obs = iter->second.observations;
     std::set<uint64> covisibilities;
     for(auto obsiter=obs.begin(); obsiter!=obs.end(); ++obsiter) {
@@ -777,31 +780,35 @@ bool ViGraph::setExtrinsics(StateId id, uchar camIdx,
   return true;
 }
 
-bool ViGraph::setExtrinsicsVariable()
+bool ViGraph::setExtrinsicsVariable(StateId id)
 {
+  OKVIS_ASSERT_TRUE_DBG(Exception, states_.count(id), "State ID not found")
+  State & state = states_.at(id);
   for(size_t i=0; i<cameraParametersVec_.size(); ++i) {
-    problem_->SetParameterBlockVariable(states_.begin()->second.extrinsics.at(i)->parameters());
+    problem_->SetParameterBlockVariable(state.extrinsics.at(i)->parameters());
   }
   return true;
 }
 
-bool ViGraph::softConstrainExtrinsics(double posStd, double rotStd)
+bool ViGraph::softConstrainExtrinsics(double posStd, double rotStd, StateId id)
 {
-  if(states_.begin()->second.extrinsicsPriors.size() == cameraParametersVec_.size())
-  for(size_t i=0; i<cameraParametersVec_.size(); ++i) {
-    problem_->RemoveResidualBlock(states_.begin()->second.extrinsicsPriors.at(i).residualBlockId);
+  OKVIS_ASSERT_TRUE_DBG(Exception, states_.count(id), "State ID not found")
+  State & state = states_.at(id);
+  if(state.extrinsicsPriors.size() == cameraParametersVec_.size()) {
+    for(size_t i=0; i<cameraParametersVec_.size(); ++i) {
+      problem_->RemoveResidualBlock(state.extrinsicsPriors.at(i).residualBlockId);
+    }
   }
-  states_.begin()->second.extrinsicsPriors.resize(cameraParametersVec_.size());
+  state.extrinsicsPriors.resize(cameraParametersVec_.size());
   for(size_t i=0; i<cameraParametersVec_.size(); ++i) {
     // add a pose prior
-    PosePrior& extrinsicsPrior = states_.begin()->second.extrinsicsPriors.at(i);
+    PosePrior& extrinsicsPrior = state.extrinsicsPriors.at(i);
     extrinsicsPrior.errorTerm.reset(
           new ceres::PoseError(
-            states_.begin()->second.extrinsics.at(i)->estimate(), posStd*posStd, rotStd*rotStd));
+            state.extrinsics.at(i)->estimate(), posStd*posStd, rotStd*rotStd));
     extrinsicsPrior.residualBlockId = problem_->AddResidualBlock(
               extrinsicsPrior.errorTerm.get(), nullptr,
-          states_.begin()->second.extrinsics.at(i)->parameters());
-
+          state.extrinsics.at(i)->parameters());
   }
   return true;
 }
@@ -809,6 +816,9 @@ bool ViGraph::softConstrainExtrinsics(double posStd, double rotStd)
 void ViGraph::updateLandmarks()
 {
   for (auto it = landmarks_.begin(); it != landmarks_.end(); ++it) {
+    if (it->second.hPoint->fixed()) {
+      continue; // constant (prior-map) landmark: estimate, quality and init flag immutable
+    }
     Eigen::Vector4d hp_W = it->second.hPoint->estimate();
     const size_t num = it->second.observations.size();
     bool isInitialised = false;
@@ -964,7 +974,7 @@ int ViGraph::cleanUnobservedLandmarks(std::map<LandmarkId, std::set<KeypointIden
   int ctr = 0;
   for (auto it = landmarks_.begin(); it != landmarks_.end(); ) {
     const auto& lm = it->second;
-    if(lm.observations.size()<=1) {
+    if(lm.observations.size()<=1 && !lm.hPoint->fixed()) {
       if(removed) {
         (*removed)[it->first] = std::set<KeypointIdentifier>();
       }

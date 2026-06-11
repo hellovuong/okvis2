@@ -102,6 +102,7 @@ if(BUILD_TESTS)
     test/TestHomogeneousPointError.cpp
     test/TestImuError.cpp
     test/TestPoseError.cpp
+    test/TestPriorFreeze.cpp
     test/TestReprojectionError.cpp
     test/test_main.cpp
   )

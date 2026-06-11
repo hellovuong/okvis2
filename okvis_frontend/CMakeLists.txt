@@ -14,6 +14,7 @@ endif()
 if(USE_NN)
   find_package(Torch REQUIRED)
 endif()
+find_package(Ceres REQUIRED)
 
 set(LIB_NAME okvis_frontend)
 add_library(${LIB_NAME}

@@ -139,6 +139,15 @@ class ViGraphEstimator : public ViGraph
   /// \return True on success.
   bool unfreezeExtrinsicsFrom(StateId stateId);
 
+  /// \brief Fixes landmarks from the first ID up to and including landmarkId.
+  /// Sets the parameter blocks constant in ceres and flags them fixed() so that
+  /// graph-side mutation paths (updateLandmarks, cleanUnobservedLandmarks, the
+  /// temporary landmark freeze in the realtime solve) recognise them as immutable.
+  /// Used to make a loaded prior map a static localization layer.
+  /// \param landmarkId The largest landmark ID to be fixed.
+  /// \return Number of landmarks newly fixed.
+  int freezeLandmarksUntil(LandmarkId landmarkId);
+
   /// \brief Helper struct to access underlying two-pose pose graph links.
   struct PoseGraphEdge {
     std::shared_ptr<ceres::TwoPoseGraphError> poseGraphError; ///< Error term.

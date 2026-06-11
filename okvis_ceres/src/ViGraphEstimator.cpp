@@ -317,6 +317,21 @@ bool ViGraphEstimator::unfreezeExtrinsicsFrom(StateId stateId)
   return true;
 }
 
+int ViGraphEstimator::freezeLandmarksUntil(LandmarkId landmarkId)
+{
+  int ctr = 0;
+  for(auto iter = landmarks_.begin();
+      iter != landmarks_.end() && iter->first.value() <= landmarkId.value(); ++iter) {
+    if(iter->second.hPoint->fixed()) {
+      continue;
+    }
+    iter->second.hPoint->setFixed(true);
+    problem_->SetParameterBlockConstant(iter->second.hPoint->parameters());
+    ++ctr;
+  }
+  return ctr;
+}
+
 bool ViGraphEstimator::convertToPoseGraphMst(
     const std::set<StateId> & states,
     const std::set<StateId> & statesToConsider,
@@ -489,15 +504,17 @@ bool ViGraphEstimator::convertToPoseGraphMst(
     // add observations to both states and remove them in the graph
     for(auto observation : referenceObservations) {
       Landmark & landmark = landmarks_.at(observation.second.landmarkId);
+      // fixed (prior-map) landmarks are constant — never keep as duplication, always remove
+      const bool effectiveKeepReference = keepReferenceState && !landmark.hPoint->fixed();
       // check if observation needs to be considered
       if(landmarksConsidered.count(observation.second.landmarkId.value())==0) {
-        if(!keepReferenceState) {
+        if(!effectiveKeepReference) {
           removeObservation(observation.first);
           removedObservations->push_back(observation.first);
         }
         continue;
       }
-      if(keepReferenceState) {
+      if(effectiveKeepReference) {
         // half the information
         // (note that TwoPoseError::addObservation will clone this reprojection error)
         observation.second.errorTerm->setInformation(
@@ -506,8 +523,8 @@ bool ViGraphEstimator::convertToPoseGraphMst(
       twoPoseLink.errorTerm->addObservation(
             observation.first, observation.second.errorTerm, cauchyLossFunctionPtr_.get(),
             referenceState.pose, landmark.hPoint,
-            referenceState.extrinsics.at(observation.first.cameraIndex), keepReferenceState);
-      if(!keepReferenceState) {
+            referenceState.extrinsics.at(observation.first.cameraIndex), effectiveKeepReference);
+      if(!effectiveKeepReference) {
         // we remove the observation completely
         removeObservation(observation.first);
         removedObservations->push_back(observation.first);
@@ -515,15 +532,17 @@ bool ViGraphEstimator::convertToPoseGraphMst(
     }
     for(auto observation : otherObservations) {
       Landmark & landmark = landmarks_.at(observation.second.landmarkId);
+      // fixed (prior-map) landmarks are constant — never keep as duplication, always remove
+      const bool effectiveKeepOther = keepOtherState && !landmark.hPoint->fixed();
       // check if observation needs to be considered
       if(landmarksConsidered.count(observation.second.landmarkId.value())==0) {
-        if(!keepOtherState) {
+        if(!effectiveKeepOther) {
           removeObservation(observation.first);
           removedObservations->push_back(observation.first);
         }
         continue;
       }
-      if(keepOtherState) {
+      if(effectiveKeepOther) {
         // half the information
         // (note that TwoPoseError::addObservation will clone this reprojection error)
         observation.second.errorTerm->setInformation(
@@ -532,8 +551,8 @@ bool ViGraphEstimator::convertToPoseGraphMst(
       twoPoseLink.errorTerm->addObservation(
             observation.first, observation.second.errorTerm, cauchyLossFunctionPtr_.get(),
             otherState.pose, landmark.hPoint,
-            otherState.extrinsics.at(observation.first.cameraIndex), keepOtherState);
-      if(!keepOtherState) {
+            otherState.extrinsics.at(observation.first.cameraIndex), effectiveKeepOther);
+      if(!effectiveKeepOther) {
         // we remove the observation completely
         removeObservation(observation.first);
         removedObservations->push_back(observation.first);
