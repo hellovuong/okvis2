@@ -34,6 +34,7 @@
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/navigation/CombinedImuFactor.h>
 #include <gtsam/navigation/ImuBias.h>
+#include <gtsam/nonlinear/NonlinearFactor.h>
 
 #include <okvis/FrameTypedefs.hpp>
 #include <okvis/Measurements.hpp>
@@ -58,6 +59,8 @@ class ViImuInitializer {
     gtsam::Rot3 R_wg;                      ///< Gravity-alignment rotation (W<-G).
     gtsam::imuBias::ConstantBias bias;     ///< Recovered IMU bias.
     std::map<std::uint64_t, Eigen::Vector3d> velocities;  ///< Per-StateId v_W.
+    std::map<std::uint64_t, okvis::kinematics::Transformation> poses;  ///< PGBA-refined poses (visual world).
+    bool usedPgba = false;                 ///< True if true PGBA (visual prior) was used.
     double conditionNumber = 0.0;          ///< Smallest eigenvalue of the gate.
   };
 
@@ -74,6 +77,16 @@ class ViImuInitializer {
   void addKeyframe(StateId id, const okvis::kinematics::Transformation& T_WS,
                    const okvis::ImuMeasurementDeque& imuSincePrev,
                    const okvis::Time& tPrev, const okvis::Time& tCurr);
+
+  /// \brief Provide a visual marginalization prior over the window pose keys
+  ///        (keyed by okvis::gtsam_backend::poseKey(stateId)). When set, the
+  ///        joint init runs TRUE PGBA: poses are free variables constrained by
+  ///        this prior plus the gravity-variable IMU factors (DM-VIO). Without
+  ///        it, the init falls back to inertial-only alignment (fixed poses).
+  void setVisualMarginalizationPrior(
+      const gtsam::NonlinearFactor::shared_ptr& prior) {
+    visualPrior_ = prior;
+  }
 
   /// \brief Advance the state machine; runs PGBA when ready.
   /// \return The current result (Result::converged set when done).
@@ -105,6 +118,7 @@ class ViImuInitializer {
   gtsam::Rot3 initialGravityAlignment() const;
 
   okvis::ImuParameters imuParameters_;
+  gtsam::NonlinearFactor::shared_ptr visualPrior_;  ///< Optional visual marg prior (PGBA).
   State state_ = State::Static;
   std::deque<Frame> window_;       ///< Recent keyframes (raw acc/gyr kept in pim).
   std::deque<Eigen::Vector3d> gyrSamples_;  ///< Recent gyro samples (excitation).

@@ -25,6 +25,7 @@
 #include <okvis/gtsam/GravityAlignmentFactor.hpp>
 #include <okvis/gtsam/GtsamConversions.hpp>
 #include <okvis/gtsam/ImuPreintegrationGtsam.hpp>
+#include <okvis/gtsam/PgbaImuFactor.hpp>
 
 namespace okvis {
 
@@ -181,15 +182,35 @@ bool ViImuInitializer::runJointInit(Result* result) const {
     values.insert(velKey(window_[i].id.value()), v);
   }
 
-  // Gravity-alignment factors between consecutive keyframes.
-  for (std::size_t i = 1; i < window_.size(); ++i) {
-    if (!window_[i].pim) continue;
-    const auto& pim = *window_[i].pim;
-    graph.emplace_shared<gtsam_backend::GravityAlignmentFactor>(
-        gtsam_backend::GravityAlignmentFactor::makeNoiseModel(pim), gravityKey(),
-        velKey(window_[i - 1].id.value()), velKey(window_[i].id.value()),
-        biasKey(), gb::toPose3(window_[i - 1].T_WS), gb::toPose3(window_[i].T_WS),
-        pim, imuParameters_.g);
+  const bool usePgba = static_cast<bool>(visualPrior_);
+  if (usePgba) {
+    // TRUE PGBA (DM-VIO): poses are FREE variables constrained by the visual
+    // marginalization prior + the gravity-variable IMU factors.
+    for (const auto& f : window_) {
+      values.insert(gb::poseKey(f.id.value()), gb::toPose3(f.T_WS));
+    }
+    graph.push_back(visualPrior_);
+    for (std::size_t i = 1; i < window_.size(); ++i) {
+      if (!window_[i].pim) continue;
+      const auto& pim = *window_[i].pim;
+      graph.emplace_shared<gtsam_backend::PgbaImuFactor>(
+          gtsam_backend::PgbaImuFactor::makeNoiseModel(pim), gravityKey(),
+          gb::poseKey(window_[i - 1].id.value()),
+          velKey(window_[i - 1].id.value()),
+          gb::poseKey(window_[i].id.value()), velKey(window_[i].id.value()),
+          biasKey(), pim, imuParameters_.g);
+    }
+  } else {
+    // Inertial-only alignment fallback: poses held fixed (ORB-SLAM3 style).
+    for (std::size_t i = 1; i < window_.size(); ++i) {
+      if (!window_[i].pim) continue;
+      const auto& pim = *window_[i].pim;
+      graph.emplace_shared<gtsam_backend::GravityAlignmentFactor>(
+          gtsam_backend::GravityAlignmentFactor::makeNoiseModel(pim), gravityKey(),
+          velKey(window_[i - 1].id.value()), velKey(window_[i].id.value()),
+          biasKey(), gb::toPose3(window_[i - 1].T_WS), gb::toPose3(window_[i].T_WS),
+          pim, imuParameters_.g);
+    }
   }
 
   gtsam::LevenbergMarquardtParams params;
@@ -217,11 +238,16 @@ bool ViImuInitializer::runJointInit(Result* result) const {
 
   result->converged = true;
   result->usedStaticFallback = false;
+  result->usedPgba = usePgba;
   result->R_wg = solution.at<gtsam::Rot3>(gravityKey());
   result->bias = solution.at<gtsam::imuBias::ConstantBias>(biasKey());
   for (const auto& f : window_) {
     result->velocities[f.id.value()] =
         solution.at<Eigen::Vector3d>(velKey(f.id.value()));
+    if (usePgba) {
+      result->poses[f.id.value()] =
+          gb::fromPose3(solution.at<gtsam::Pose3>(gb::poseKey(f.id.value())));
+    }
   }
   return true;
 }
