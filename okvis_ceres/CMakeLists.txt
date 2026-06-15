@@ -96,6 +96,7 @@ if(USE_GTSAM AND GTSAM_FOUND)
     include/okvis/gtsam/ImuPreintegrationGtsam.hpp
     include/okvis/gtsam/Marginalization.hpp
     include/okvis/gtsam/DelayedGraph.hpp
+    include/okvis/gtsam/GravityAlignmentFactor.hpp
     src/gtsam/GtsamBackend.cpp
     src/gtsam/ImuPreintegrationGtsam.cpp
     src/gtsam/Marginalization.cpp
@@ -128,6 +129,7 @@ if(BUILD_TESTS)
       test/TestGtsamBackend.cpp
       test/TestGtsamMarginalization.cpp
       test/TestDelayedGraph.cpp
+      test/TestGravityAlignmentFactor.cpp
     )
   endif()
   target_link_libraries(${TEST_NAME}

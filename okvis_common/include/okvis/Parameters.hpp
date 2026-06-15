@@ -117,6 +117,20 @@ struct ImuParameters{
   Eigen::Vector3d g0;  ///< Mean of the prior gyro bias.
   Eigen::Vector3d a0;  ///< Mean of the prior accelerometer bias.
   double g;  ///< Earth acceleration.
+
+  // --- DM-VIO-style dynamic init & delayed marginalization (experimental,
+  //     GTSAM backend only; defaults preserve the legacy static-init behavior) ---
+  /// \brief IMU initialization strategy.
+  enum class InitStrategy { Static, Dynamic };
+  InitStrategy initStrategy = InitStrategy::Static; ///< Static (legacy) or dynamic PGBA init.
+  double excitationThreshAcc = 0.5;   ///< Min accel-residual stdev to promote init [m/s^2].
+  double excitationThreshGyr = 0.05;  ///< Min gyro stdev to promote init [rad/s].
+  int jointInitWindow = 20;           ///< Keyframes used for the joint IMU init.
+  double initMinCondition = 1e-3;     ///< Min eigenvalue gating the init Hessian.
+  double initTimeoutSec = 5.0;        ///< Fall back to static init after this with no excitation.
+  int delayedMarginalizationLag = 0;  ///< Delayed-marg lag in keyframes; 0 disables (legacy).
+  double remargBiasThreshold = 0.5;   ///< Aggregate bias change to trigger re-marginalization.
+  double remargMinIntervalSec = 2.0;  ///< Throttle: min seconds between re-marginalizations.
 };
 
 /**
