@@ -61,8 +61,10 @@ void GtsamBackend::setExtrinsics(std::size_t cameraId,
 
 void GtsamBackend::addState(StateId id,
                             const okvis::kinematics::Transformation& T_WS,
-                            const okvis::SpeedAndBias& speedAndBias) {
+                            const okvis::SpeedAndBias& speedAndBias,
+                            const okvis::Time& timestamp, bool isKeyframe) {
   const std::uint64_t i = id.value();
+  stateMeta_[i] = StateMeta{timestamp, isKeyframe};
   gtsam::Values v;
   v.insert(gb::poseKey(i), gb::toPose3(T_WS));
   v.insert(gb::velocityKey(i), gb::velocityOf(speedAndBias));
@@ -79,6 +81,32 @@ void GtsamBackend::addState(StateId id,
   values_.insert(gb::biasKey(i), gb::biasOf(speedAndBias));
   delayed_.addValues(v);
   states_.insert(i);
+}
+
+okvis::Time GtsamBackend::timestamp(StateId id) const {
+  const auto it = stateMeta_.find(id.value());
+  return it == stateMeta_.end() ? okvis::Time(0) : it->second.timestamp;
+}
+
+bool GtsamBackend::isKeyframe(StateId id) const {
+  const auto it = stateMeta_.find(id.value());
+  return it != stateMeta_.end() && it->second.isKeyframe;
+}
+
+void GtsamBackend::setKeyframe(StateId id, bool isKeyframe) {
+  const auto it = stateMeta_.find(id.value());
+  if (it != stateMeta_.end()) it->second.isKeyframe = isKeyframe;
+}
+
+StateId GtsamBackend::currentStateId() const {
+  return states_.empty() ? StateId() : StateId(*states_.rbegin());
+}
+
+StateId GtsamBackend::stateIdByAge(std::size_t age) const {
+  if (age >= states_.size()) return StateId();
+  auto it = states_.rbegin();
+  std::advance(it, age);
+  return StateId(*it);
 }
 
 void GtsamBackend::addPosePrior(StateId id,
@@ -173,8 +201,12 @@ void GtsamBackend::marginalizeKeys(const gtsam::KeyVector& keysToDrop) {
   for (const gtsam::Key k : keysToDrop) {
     if (values_.exists(k)) values_.erase(k);
     const gtsam::Symbol sym(k);
-    if (sym.chr() == 'x') states_.erase(sym.index());
-    else if (sym.chr() == 'l') landmarks_.erase(sym.index());
+    if (sym.chr() == 'x') {
+      states_.erase(sym.index());
+      stateMeta_.erase(sym.index());
+    } else if (sym.chr() == 'l') {
+      landmarks_.erase(sym.index());
+    }
   }
 
   // Delayed marginalization: the delayed graph KEEPS the raw factors of the

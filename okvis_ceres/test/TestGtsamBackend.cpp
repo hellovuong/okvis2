@@ -173,3 +173,35 @@ TEST(GtsamBackend, StereoImuConvergence) {
     EXPECT_LT((sb.head<3>() - v_W).norm(), 5e-2) << "frame " << k << " velocity off";
   }
 }
+
+// Track-5 S1: Estimator-API state/window queries.
+TEST(GtsamBackend, StateMetadataAndQueries) {
+  okvis::GtsamBackend backend(makeImuParameters());
+  const okvis::SpeedAndBias sb = okvis::SpeedAndBias::Zero();
+  const okvis::kinematics::Transformation I;
+
+  EXPECT_EQ(backend.numFrames(), 0u);
+  EXPECT_FALSE(backend.currentStateId().isInitialised());
+
+  backend.addState(okvis::StateId(1), I, sb, okvis::Time(1.0), true);
+  backend.addState(okvis::StateId(2), I, sb, okvis::Time(2.0), false);
+  backend.addState(okvis::StateId(3), I, sb, okvis::Time(3.0), true);
+
+  EXPECT_EQ(backend.numFrames(), 3u);
+  EXPECT_EQ(backend.currentStateId().value(), 3u);
+  EXPECT_EQ(backend.stateIdByAge(0).value(), 3u);   // newest
+  EXPECT_EQ(backend.stateIdByAge(2).value(), 1u);   // oldest
+  EXPECT_FALSE(backend.stateIdByAge(3).isInitialised());
+  EXPECT_NEAR(backend.timestamp(okvis::StateId(2)).toSec(), 2.0, 1e-9);
+  EXPECT_TRUE(backend.isKeyframe(okvis::StateId(1)));
+  EXPECT_FALSE(backend.isKeyframe(okvis::StateId(2)));
+  backend.setKeyframe(okvis::StateId(2), true);
+  EXPECT_TRUE(backend.isKeyframe(okvis::StateId(2)));
+
+  // Marginalizing the oldest state drops it from the window + metadata.
+  backend.marginalizeState(okvis::StateId(1));
+  EXPECT_EQ(backend.numFrames(), 2u);
+  EXPECT_FALSE(backend.hasState(okvis::StateId(1)));
+  EXPECT_FALSE(backend.isKeyframe(okvis::StateId(1)));
+  EXPECT_EQ(backend.currentStateId().value(), 3u);
+}

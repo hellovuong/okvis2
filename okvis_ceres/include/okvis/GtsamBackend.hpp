@@ -71,8 +71,26 @@ class GtsamBackend {
 
   // --- states ---------------------------------------------------------------
   /// \brief Insert a state (pose + velocity + bias) as initial values.
+  /// \param timestamp  State timestamp (for the Estimator API; default 0).
+  /// \param isKeyframe Whether this state is a keyframe.
   void addState(StateId id, const okvis::kinematics::Transformation& T_WS,
-                const okvis::SpeedAndBias& speedAndBias);
+                const okvis::SpeedAndBias& speedAndBias,
+                const okvis::Time& timestamp = okvis::Time(0),
+                bool isKeyframe = false);
+
+  // --- Estimator-API state/window queries (track-5 S1) ----------------------
+  /// \brief Timestamp of a state (or invalid Time if unknown).
+  okvis::Time timestamp(StateId id) const;
+  /// \brief Whether a state is a keyframe.
+  bool isKeyframe(StateId id) const;
+  /// \brief Flag/unflag a state as keyframe.
+  void setKeyframe(StateId id, bool isKeyframe);
+  /// \brief The most-recent (highest-id) state, or invalid if none.
+  StateId currentStateId() const;
+  /// \brief State by age: age 0 = newest, 1 = next newest, ... (invalid if OOB).
+  StateId stateIdByAge(std::size_t age) const;
+  /// \brief Number of states currently in the window.
+  std::size_t numFrames() const { return states_.size(); }
 
   /// \brief Add a Gaussian prior on a pose (e.g. for gauge fixing the first KF).
   void addPosePrior(StateId id, const okvis::kinematics::Transformation& T_WS,
@@ -191,6 +209,13 @@ class GtsamBackend {
   std::set<std::uint64_t> states_;       ///< StateIds with variables added.
   std::set<std::uint64_t> landmarks_;    ///< LandmarkIds with variables added.
   std::set<std::size_t> extrinsics_;     ///< Camera ids with extrinsics added.
+
+  /// \brief Per-state metadata for the Estimator API.
+  struct StateMeta {
+    okvis::Time timestamp;
+    bool isKeyframe = false;
+  };
+  std::map<std::uint64_t, StateMeta> stateMeta_;  ///< Keyed by StateId value.
 
   // --- delayed marginalization state ---
   /// \brief Mirror of the raw (relinearizable) factors, for re-marginalization.
