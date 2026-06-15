@@ -12,6 +12,9 @@
 
 #include <okvis/GtsamBackend.hpp>
 
+#include <algorithm>
+#include <vector>
+
 #include <gtsam/inference/Symbol.h>
 #include <gtsam/navigation/NavState.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
@@ -146,6 +149,8 @@ void GtsamBackend::addState(StateId id,
   values_.insert(gb::biasKey(i), gb::biasOf(speedAndBias));
   delayed_.addValues(v);
   states_.insert(i);
+  imuFrames_.insert(id);
+  if (isKeyframe) keyFrames_.insert(id);
 }
 
 okvis::Time GtsamBackend::timestamp(StateId id) const {
@@ -269,6 +274,8 @@ void GtsamBackend::marginalizeKeys(const gtsam::KeyVector& keysToDrop) {
     if (sym.chr() == 'x') {
       states_.erase(sym.index());
       stateMeta_.erase(sym.index());
+      keyFrames_.erase(StateId(sym.index()));
+      imuFrames_.erase(StateId(sym.index()));
     } else if (sym.chr() == 'l') {
       landmarks_.erase(sym.index());
     }
@@ -404,6 +411,57 @@ void GtsamBackend::marginalizeState(StateId id,
     keys.push_back(gb::landmarkKey(l.value()));
   }
   marginalizeKeys(keys);
+}
+
+bool GtsamBackend::applyStrategy(std::size_t numKeyframes,
+                                 std::size_t /*numLoopClosureFrames*/,
+                                 std::size_t numImuFrames,
+                                 std::set<StateId>& affectedFrames, bool /*expand*/) {
+  // Keep the newest numImuFrames states + the newest numKeyframes keyframes.
+  std::set<std::uint64_t> keep;
+  for (auto it = states_.rbegin(); it != states_.rend() && keep.size() < numImuFrames;
+       ++it) {
+    keep.insert(*it);
+  }
+  std::size_t kfKept = 0;
+  for (auto it = states_.rbegin(); it != states_.rend() && kfKept < numKeyframes; ++it) {
+    if (keyFrames_.count(StateId(*it))) {
+      keep.insert(*it);
+      ++kfKept;
+    }
+  }
+  // Marginalize the rest, oldest first (states_ iterates ascending = oldest first).
+  const std::vector<std::uint64_t> ordered(states_.begin(), states_.end());
+  for (const std::uint64_t id : ordered) {
+    if (keep.count(id) == 0) {
+      marginalizeState(StateId(id));
+      affectedFrames.insert(StateId(id));
+    }
+  }
+  // Refresh the IMU window to the newest numImuFrames survivors.
+  imuFrames_.clear();
+  for (auto it = states_.rbegin();
+       it != states_.rend() && imuFrames_.size() < numImuFrames; ++it) {
+    imuFrames_.insert(StateId(*it));
+  }
+  return true;
+}
+
+void GtsamBackend::optimiseRealtimeGraph(int numIter,
+                                         std::vector<StateId>& updatedStates,
+                                         int /*numThreads*/, bool /*verbose*/,
+                                         bool /*onlyNewestState*/,
+                                         bool /*isInitialised*/) {
+  optimise(std::max(numIter, optMinIterations_));
+  updatedStates.clear();
+  updatedStates.reserve(states_.size());
+  for (const std::uint64_t id : states_) updatedStates.push_back(StateId(id));
+}
+
+bool GtsamBackend::setOptimisationTimeLimit(double timeLimit, int minIterations) {
+  optTimeLimit_ = timeLimit;
+  optMinIterations_ = minIterations;
+  return true;
 }
 
 double GtsamBackend::optimise(int maxIterations) {

@@ -245,3 +245,56 @@ TEST(GtsamBackend, PropagatedStateSequenceStaysConsistent) {
     EXPECT_LT(T.r().norm(), 0.05) << "frame " << k << " drifted: " << T.r().transpose();
   }
 }
+
+// Track-5 S1: sliding-window strategy marginalizes old non-kept frames.
+TEST(GtsamBackend, WindowStrategyMarginalisesOldFrames) {
+  const okvis::ImuParameters params = makeImuParameters();
+  okvis::GtsamBackend backend(params);
+  backend.setExtrinsics(0, okvis::kinematics::Transformation(), true);
+
+  auto imuFor = [&](double t0, double t1) {
+    okvis::ImuMeasurementDeque d;
+    const double dt = 1.0 / 200.0;
+    for (double t = t0 - 0.01; t <= t1 + 0.01 + 1e-9; t += dt) {
+      okvis::ImuMeasurement m;
+      m.timeStamp = okvis::Time(t < 0 ? 0.0 : t);
+      m.measurement.gyroscopes = Eigen::Vector3d::Zero();
+      m.measurement.accelerometers = Eigen::Vector3d(0, 0, params.g);
+      d.push_back(m);
+    }
+    return d;
+  };
+
+  const double dt = 0.1;
+  const int n = 8;
+  for (int k = 0; k < n; ++k) {  // keyframes at odd ids (1,3,5,7)
+    backend.addPropagatedState(okvis::StateId(k + 1), okvis::Time(k * dt),
+                               imuFor(k == 0 ? 0.0 : (k - 1) * dt, k * dt),
+                               /*asKeyframe=*/(k % 2 == 0));
+  }
+  EXPECT_EQ(backend.numFrames(), 8u);
+
+  std::set<okvis::StateId> affected;
+  backend.applyStrategy(/*numKeyframes=*/2, /*numLoopClosureFrames=*/0,
+                        /*numImuFrames=*/3, affected, true);
+
+  // keep = newest 3 {6,7,8} + newest 2 keyframes {5,7} = {5,6,7,8}.
+  EXPECT_EQ(backend.numFrames(), 4u);
+  for (int id : {5, 6, 7, 8}) EXPECT_TRUE(backend.hasState(okvis::StateId(id))) << id;
+  for (int id : {1, 2, 3, 4}) EXPECT_FALSE(backend.hasState(okvis::StateId(id))) << id;
+  EXPECT_EQ(affected.size(), 4u);
+  // IMU window = newest 3.
+  EXPECT_EQ(backend.imuFrames().size(), 3u);
+  EXPECT_TRUE(backend.isInImuWindow(okvis::StateId(8)));
+  EXPECT_FALSE(backend.isInImuWindow(okvis::StateId(5)));
+  // kept keyframes are 5 and 7.
+  EXPECT_TRUE(backend.keyFrames().count(okvis::StateId(5)) > 0);
+  EXPECT_TRUE(backend.keyFrames().count(okvis::StateId(7)) > 0);
+
+  std::vector<okvis::StateId> updated;
+  backend.optimiseRealtimeGraph(10, updated);
+  EXPECT_EQ(updated.size(), 4u);
+  for (int id : {5, 6, 7, 8}) {
+    EXPECT_LT(backend.getPose(okvis::StateId(id)).r().norm(), 0.05) << "kept " << id;
+  }
+}

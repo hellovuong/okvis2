@@ -109,6 +109,27 @@ class GtsamBackend {
   StateId stateIdByAge(std::size_t age) const;
   /// \brief Number of states currently in the window.
   std::size_t numFrames() const { return states_.size(); }
+  /// \brief Whether a state is in the (recent) IMU window.
+  bool isInImuWindow(StateId id) const { return imuFrames_.count(id) > 0; }
+  /// \brief Current keyframes.
+  const std::set<StateId>& keyFrames() const { return keyFrames_; }
+  /// \brief Current IMU-window frames.
+  const std::set<StateId>& imuFrames() const { return imuFrames_; }
+
+  // --- window strategy + optimisation entry (Estimator API, track-5 S1) ------
+  /// \brief Sliding-window policy: keep the newest `numImuFrames` states plus the
+  ///        newest `numKeyframes` keyframes; Schur-marginalize the rest (oldest
+  ///        first). `numLoopClosureFrames` is ignored until S3 (loop closure).
+  bool applyStrategy(std::size_t numKeyframes, std::size_t numLoopClosureFrames,
+                     std::size_t numImuFrames, std::set<StateId>& affectedFrames,
+                     bool expand = true);
+  /// \brief Optimise the (single) realtime graph; fills updatedStates with all
+  ///        states. (numThreads/onlyNewestState/isInitialised reserved for parity.)
+  void optimiseRealtimeGraph(int numIter, std::vector<StateId>& updatedStates,
+                             int numThreads = 1, bool verbose = false,
+                             bool onlyNewestState = false, bool isInitialised = true);
+  /// \brief Store an optimisation time budget (batch LM honours minIterations).
+  bool setOptimisationTimeLimit(double timeLimit, int minIterations);
 
   /// \brief Add a Gaussian prior on a pose (e.g. for gauge fixing the first KF).
   void addPosePrior(StateId id, const okvis::kinematics::Transformation& T_WS,
@@ -236,6 +257,10 @@ class GtsamBackend {
   std::map<std::uint64_t, StateMeta> stateMeta_;  ///< Keyed by StateId value.
   std::vector<okvis::CameraParameters,
               Eigen::aligned_allocator<okvis::CameraParameters>> cameraParams_;  ///< Registered cameras.
+  std::set<StateId> keyFrames_;   ///< Current keyframes.
+  std::set<StateId> imuFrames_;   ///< Current IMU-window frames.
+  double optTimeLimit_ = -1.0;    ///< Optimisation time budget [s] (<0: none).
+  int optMinIterations_ = 3;      ///< Minimum LM iterations regardless of budget.
 
   // --- delayed marginalization state ---
   /// \brief Mirror of the raw (relinearizable) factors, for re-marginalization.
