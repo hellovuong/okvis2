@@ -55,7 +55,7 @@
 #include <okvis/ViVisualizer.hpp>
 #include <okvis/timing/Timer.hpp>
 #include <okvis/threadsafe/ThreadsafeQueue.hpp>
-#include <okvis/ViSlamBackend.hpp>
+#include <okvis/EstimatorBackend.hpp>
 #include <okvis/ViImuInitializer.hpp>
 #include <okvis/ViInterface.hpp>
 
@@ -252,7 +252,7 @@ private:
   /// @name Algorithm objects.
   /// @{
 
-  okvis::ViSlamBackend estimator_;    ///< The backend estimator.
+  okvis::Estimator estimator_;    ///< The backend estimator (compile-time selected).
   okvis::Frontend frontend_;      ///< The frontend.
   /// @}
 

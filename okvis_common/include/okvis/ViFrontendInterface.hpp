@@ -60,9 +60,17 @@
 namespace okvis {
 
 class ViSlamBackend;
+class GtsamBackend;
 
-/// \brief The VI-SLAM estimator class.
+/// \brief The VI-SLAM estimator class. Compile-time selectable backend: the Ceres
+///        ViSlamBackend (default) or the experimental GtsamBackend
+///        (OKVIS_USE_GTSAM_BACKEND, track-5). Only forward declarations are needed
+///        here, so okvis_common stays free of any backend dependency.
+#ifdef OKVIS_USE_GTSAM_BACKEND
+using Estimator = GtsamBackend;
+#else
 using Estimator = ViSlamBackend;
+#endif
 
 /**
  * @brief The VioFrontendInterface class is an interface for frontends.

@@ -559,7 +559,7 @@ bool ThreadedSlam::processFrame() {
     }
     // hack: call full graph optimisation
     fullGraphOptimisationThread_ = std::thread(
-          &ViSlamBackend::optimiseFullGraph, &estimator_,
+          &okvis::Estimator::optimiseFullGraph, &estimator_,
           parameters_.estimator.full_graph_iterations,
           std::ref(posegraphOptimisationSummary_),
           parameters_.estimator.full_graph_num_threads, false);

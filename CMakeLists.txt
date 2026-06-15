@@ -101,6 +101,19 @@ if(USE_GTSAM)
   endif()
 endif()
 
+# Experimental: select the GTSAM backend as the live okvis::Estimator. Default OFF
+# (Ceres ViSlamBackend remains the production backend). When ON, the okvis::Estimator
+# typedef resolves to GtsamBackend (track-5); incomplete until S5 parity.
+option(OKVIS_USE_GTSAM_BACKEND
+       "Select the experimental GtsamBackend as the live Estimator (requires USE_GTSAM)" OFF)
+if(OKVIS_USE_GTSAM_BACKEND)
+  if(NOT (USE_GTSAM AND GTSAM_FOUND))
+    message(FATAL_ERROR "OKVIS_USE_GTSAM_BACKEND requires USE_GTSAM and a found GTSAM")
+  endif()
+  add_compile_definitions(OKVIS_USE_GTSAM_BACKEND)
+  message(STATUS "Live backend: GtsamBackend (experimental, track-5)")
+endif()
+
 add_subdirectory(okvis_util)
 add_subdirectory(okvis_kinematics)
 add_subdirectory(okvis_time)

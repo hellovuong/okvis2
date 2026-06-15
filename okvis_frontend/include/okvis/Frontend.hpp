@@ -44,7 +44,7 @@
 
 #include <okvis/Component.hpp>
 #include <okvis/ViFrontendInterface.hpp>
-#include <okvis/ViSlamBackend.hpp>
+#include <okvis/EstimatorBackend.hpp>
 #include <okvis/assert_macros.hpp>
 #include <okvis/timing/Timer.hpp>
 #include <thread>
