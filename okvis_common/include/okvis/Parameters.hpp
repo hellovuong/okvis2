@@ -166,6 +166,12 @@ struct EstimatorParameters {
   int full_graph_num_threads; ///< Number of threads for the full (background) optimisation.
   double p_dbow; ///< Match threshold for dBoW -- unfortunately this varies with setups.
   double drift_percentage_heuristic; ///< % allowed drift in loop closures rel. to dist. travelled.
+
+  /// \brief Optimisation backend selection (experimental). Ceres is the default
+  ///        and only backend wired into ThreadedSlam; Gtsam selects the
+  ///        experimental DM-VIO/GTSAM backend once that integration lands.
+  enum class Backend { Ceres, Gtsam };
+  Backend backend = Backend::Ceres; ///< Which optimisation backend to use.
 };
 
 /**

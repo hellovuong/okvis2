@@ -229,6 +229,38 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
   parseEntry(file["imu_parameters"], "g",
              viParameters_.imu.g);
 
+  // Optional DM-VIO-style dynamic-init / delayed-marginalization parameters
+  // (experimental, GTSAM backend). Absent keys keep the struct defaults, so
+  // existing configs are unaffected.
+  {
+    const cv::FileNode imuNode = file["imu_parameters"];
+    if (!imuNode["init_strategy"].empty() && imuNode["init_strategy"].isString()) {
+      std::string strat = std::string(imuNode["init_strategy"]);
+      strat = strat.substr(0, strat.find(" "));
+      std::transform(strat.begin(), strat.end(), strat.begin(), ::tolower);
+      viParameters_.imu.initStrategy =
+          (strat == "dynamic") ? ImuParameters::InitStrategy::Dynamic
+                               : ImuParameters::InitStrategy::Static;
+    }
+    if (!imuNode["excitation_thresh_acc"].empty())
+      parseEntry(imuNode, "excitation_thresh_acc", viParameters_.imu.excitationThreshAcc);
+    if (!imuNode["excitation_thresh_gyr"].empty())
+      parseEntry(imuNode, "excitation_thresh_gyr", viParameters_.imu.excitationThreshGyr);
+    if (!imuNode["joint_init_window"].empty())
+      parseEntry(imuNode, "joint_init_window", viParameters_.imu.jointInitWindow);
+    if (!imuNode["init_min_condition"].empty())
+      parseEntry(imuNode, "init_min_condition", viParameters_.imu.initMinCondition);
+    if (!imuNode["init_timeout_sec"].empty())
+      parseEntry(imuNode, "init_timeout_sec", viParameters_.imu.initTimeoutSec);
+    if (!imuNode["delayed_marginalization_lag"].empty())
+      parseEntry(imuNode, "delayed_marginalization_lag",
+                 viParameters_.imu.delayedMarginalizationLag);
+    if (!imuNode["remarg_bias_threshold"].empty())
+      parseEntry(imuNode, "remarg_bias_threshold", viParameters_.imu.remargBiasThreshold);
+    if (!imuNode["remarg_min_interval_sec"].empty())
+      parseEntry(imuNode, "remarg_min_interval_sec", viParameters_.imu.remargMinIntervalSec);
+  }
+
   // Parameters for detection etc.
   parseEntry(file["frontend_parameters"], "detection_threshold",
              viParameters_.frontend.detection_threshold);
@@ -278,6 +310,20 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
              viParameters_.estimator.p_dbow);
   parseEntry(file["estimator_parameters"], "drift_percentage_heuristic",
              viParameters_.estimator.drift_percentage_heuristic);
+  // Optional experimental backend selector (defaults to Ceres). Only the Ceres
+  // backend is wired into ThreadedSlam today; "gtsam" is accepted for forward
+  // compatibility with the experimental DM-VIO backend.
+  {
+    const cv::FileNode estNode = file["estimator_parameters"];
+    if (!estNode["backend"].empty() && estNode["backend"].isString()) {
+      std::string be = std::string(estNode["backend"]);
+      be = be.substr(0, be.find(" "));
+      std::transform(be.begin(), be.end(), be.begin(), ::tolower);
+      viParameters_.estimator.backend =
+          (be == "gtsam") ? EstimatorParameters::Backend::Gtsam
+                          : EstimatorParameters::Backend::Ceres;
+    }
+  }
 
   // Some options for how and what to output.
   parseEntry(file["output_parameters"], "display_matches",
