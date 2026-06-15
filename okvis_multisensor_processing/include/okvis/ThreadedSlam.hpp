@@ -56,6 +56,7 @@
 #include <okvis/timing/Timer.hpp>
 #include <okvis/threadsafe/ThreadsafeQueue.hpp>
 #include <okvis/ViSlamBackend.hpp>
+#include <okvis/ViImuInitializer.hpp>
 #include <okvis/ViInterface.hpp>
 
 /// \brief okvis Main namespace of this package.
@@ -253,6 +254,13 @@ private:
 
   okvis::ViSlamBackend estimator_;    ///< The backend estimator.
   okvis::Frontend frontend_;      ///< The frontend.
+  /// @}
+
+  /// @name Experimental DM-VIO dynamic IMU initializer (shadow, observed only).
+  /// @{
+  std::unique_ptr<okvis::ViImuInitializer> dmvioInitializer_;  ///< Created when init_strategy=Dynamic.
+  bool dmvioInitDone_ = false;     ///< Whether the DM-VIO init has converged.
+  StateId dmvioPrevId_;            ///< Previous frame fed to the DM-VIO init.
   /// @}
 
   okvis::ViParameters parameters_; ///< The parameters and settings.

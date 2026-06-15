@@ -583,6 +583,40 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
       false, false, frontend_.isInitialized());
   optimiseTimer.stop();
 
+  // Experimental DM-VIO dynamic IMU initialization: drive our ViImuInitializer
+  // on the live keyframe poses + real IMU and log what it recovers. This is a
+  // shadow init (observed only) — it does not yet feed the estimator.
+  if (parameters_.imu.initStrategy == ImuParameters::InitStrategy::Dynamic &&
+      !dmvioInitDone_ && frontend_.isInitialized()) {
+    if (!dmvioInitializer_) {
+      dmvioInitializer_.reset(new okvis::ViImuInitializer(parameters_.imu));
+      dmvioPrevId_ = StateId(0);
+    }
+    const StateId curId(multiFrame->id());
+    const okvis::Time curTime = multiFrame->timestamp();
+    const okvis::Time prevTime = dmvioPrevId_.isInitialised()
+                                     ? estimator_.timestamp(dmvioPrevId_)
+                                     : curTime;
+    if (imuMeasurementsByFrame_.count(curId)) {
+      dmvioInitializer_->addKeyframe(curId, estimator_.pose(curId),
+                                     imuMeasurementsByFrame_.at(curId), prevTime,
+                                     curTime);
+      dmvioPrevId_ = curId;
+      const okvis::ViImuInitializer::Result r = dmvioInitializer_->step();
+      if (r.converged) {
+        dmvioInitDone_ = true;
+        const Eigen::Vector3d gW =
+            r.R_wg.rotate(Eigen::Vector3d(0, 0, -parameters_.imu.g));
+        LOG(INFO) << "[DM-VIO init] converged at t=" << curTime
+                  << " (pgba=" << r.usedPgba
+                  << " static=" << r.usedStaticFallback << "): gravity_W=["
+                  << gW.transpose() << "] |g|=" << gW.norm()
+                  << " b_g=[" << r.bias.gyroscope().transpose() << "] b_a=["
+                  << r.bias.accelerometer().transpose() << "]";
+      }
+    }
+  }
+
   // import pose graph optimisation
   std::vector<StateId> updatedStatesSync;
   if(estimator_.isLoopClosureAvailable()) {
