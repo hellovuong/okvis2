@@ -32,6 +32,9 @@
 
 #include <Eigen/Core>
 
+#include <ceres/ceres.h>
+#include <opencv2/core/core.hpp>
+
 #include <gtsam/navigation/CombinedImuFactor.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
@@ -60,6 +63,8 @@ class GtsamBackend {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+  /// \brief Default constructor (IMU params set later via addImu).
+  GtsamBackend();
   /// \brief Construct with IMU parameters (for preintegration noise / gravity).
   explicit GtsamBackend(const okvis::ImuParameters& imuParameters);
 
@@ -148,8 +153,14 @@ class GtsamBackend {
 
   // --- landmarks ------------------------------------------------------------
   /// \brief Insert a landmark (homogeneous world point) as an initial value.
-  void addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W,
+  bool addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W,
                    bool initialised = false);
+  /// \brief Insert a landmark with an auto-assigned id; returns the new id.
+  LandmarkId addLandmark(const Eigen::Vector4d& hp_W, bool initialised) {
+    const LandmarkId id(nextLandmarkId_++);
+    addLandmark(id, hp_W, initialised);
+    return id;
+  }
 
   // --- landmark metadata (Estimator API, track-5 S2) ------------------------
   /// \brief Set a landmark's world position and initialisation flag.
@@ -223,10 +234,26 @@ class GtsamBackend {
         multiFrame.template geometryAs<GEOMETRY_TYPE>(kid.cameraIndex), useCauchy);
   }
 
+  /// \brief Add an observation by (landmark, state, camera, keypoint) — the live
+  ///        frontend signature; looks up the stored multiframe and delegates.
+  template <class GEOMETRY_TYPE>
+  bool addObservation(LandmarkId landmarkId, StateId stateId, std::size_t camIdx,
+                      std::size_t keypointIdx, bool useCauchy = true) {
+    const auto it = multiFrames_.find(stateId);
+    if (it == multiFrames_.end() || !it->second) return false;
+    return addObservation<GEOMETRY_TYPE>(
+        *it->second, landmarkId,
+        KeypointIdentifier(stateId.value(), camIdx, keypointIdx), useCauchy);
+  }
+
   /// \brief Whether a keypoint observation is present.
   bool isObserved(KeypointIdentifier kid) const { return observations_.count(kid) > 0; }
   /// \brief Remove a tracked observation (drops its factor from the active graph).
   bool removeObservation(KeypointIdentifier kid);
+  /// \brief Remove an observation by (state, camera, keypoint).
+  bool removeObservation(StateId stateId, std::size_t camIdx, std::size_t keypointIdx) {
+    return removeObservation(KeypointIdentifier(stateId.value(), camIdx, keypointIdx));
+  }
   /// \brief Remove landmarks that have no remaining observations. Returns the count.
   int cleanUnobservedLandmarks();
 
@@ -313,6 +340,60 @@ class GtsamBackend {
   bool hasState(StateId id) const { return states_.count(id.value()) > 0; }
   bool hasLandmark(LandmarkId id) const { return landmarks_.count(id.value()) > 0; }
 
+  // --- Estimator-API getters/setters + stubs (track-5 integration) ----------
+  /// \brief Pose getter (const ref; backed by a lazily-updated cache).
+  const okvis::kinematics::TransformationCacheless& pose(StateId id) const;
+  /// \brief Speed/bias getter (const ref; cached).
+  const okvis::SpeedAndBias& speedAndBias(StateId id) const;
+  /// \brief Extrinsics getter (const ref; cached, per camera).
+  const okvis::kinematics::TransformationCacheless& extrinsics(StateId id,
+                                                               unsigned char camIdx) const;
+  /// \brief Multiframe accessor (nullptr if not stored).
+  okvis::MultiFramePtr multiFrame(StateId stateId) const;
+
+  bool setPose(StateId id, const okvis::kinematics::TransformationCacheless& pose);
+  bool setSpeedAndBias(StateId id, const okvis::SpeedAndBias& speedAndBias);
+  bool setObservationInformation(StateId stateId, std::size_t camIdx,
+                                 std::size_t keypointIdx,
+                                 const Eigen::Matrix2d& information);
+  void setDetectorUniformityRadius(double /*uniformityRadius*/) {}
+  double trackingQuality(StateId /*id*/) const { return 1.0; }
+
+  /// \brief Apply dynamic IMU init (rotate world by R_gw=q_gw, set bias). Wraps
+  ///        the ViGraphEstimator-style rewrite onto this backend.
+  bool applyInitialisation(const Eigen::Quaterniond& q_gw,
+                           const Eigen::Vector3d& b_g, const Eigen::Vector3d& b_a);
+
+  bool mergeLandmark(const LandmarkId& fromId, const LandmarkId& intoId);
+  int mergeLandmarks(std::vector<LandmarkId> fromIds, std::vector<LandmarkId> intoIds);
+  bool areLandmarksInFrontOfCameras() const { return true; }
+
+  // Loop-closure / full-graph / map: stubs (S3/S4 will implement).
+  StateId mostOverlappedStateId(StateId /*frame*/, bool = true) const { return StateId(); }
+  double overlapFraction(const okvis::MultiFramePtr, const okvis::MultiFramePtr) const {
+    return 0.0;
+  }
+  bool attemptLoopClosure(StateId, StateId, const okvis::kinematics::Transformation&,
+                          const Eigen::Matrix<double, 6, 6>&,
+                          bool& skipFullGraphOptimisation, double) {
+    skipFullGraphOptimisation = true;
+    return false;
+  }
+  void addLoopClosureFrame(StateId, std::set<LandmarkId>&, bool) {}
+  void optimiseFullGraph(int, ::ceres::Solver::Summary&, int = 1, bool = false) {}
+  void doFinalBa(int numIter, ::ceres::Solver::Summary& summary,
+                 std::set<StateId>& updatedStatesBa, double = 0.0, double = 0.0,
+                 int = 1, bool = false);
+  bool synchroniseRealtimeAndFullGraph(std::vector<StateId>&) { return false; }
+  bool saveMap(std::string /*path*/) { return false; }
+  bool writeFinalCsvTrajectory(const std::string& csvFileName, bool rpg = false) const;
+  void drawOverheadImage(cv::Mat& /*image*/, int = 0) const {}
+  void clear();
+
+  /// \brief Per-state anchor transforms (loop-closure/multi-session). Empty stub.
+  okvis::AlignedMap<StateId, okvis::AlignedMap<std::uint64_t,
+                    okvis::kinematics::Transformation>> T_AiS_;
+
   /// \brief Access the underlying graph (for marginalization in later phases).
   const gtsam::NonlinearFactorGraph& graph() const { return graph_; }
   /// \brief Access the current estimate.
@@ -358,6 +439,13 @@ class GtsamBackend {
   std::map<KeypointIdentifier, ObsRecord> observations_;          ///< By keypoint id.
   std::map<std::uint64_t, std::set<KeypointIdentifier>> landmarkObs_;  ///< Per-landmark obs.
   double cauchyParam_ = 1.0;  ///< Reprojection Cauchy robustifier scale.
+  std::uint64_t nextLandmarkId_ = 1;  ///< Counter for auto-assigned landmark ids.
+  okvis::AlignedMap<StateId, okvis::MultiFramePtr> multiFrames_;  ///< Stored multiframes.
+
+  // Caches backing the const-reference Estimator getters (computed from Values).
+  mutable std::map<std::uint64_t, okvis::kinematics::TransformationCacheless> poseCache_;
+  mutable std::map<std::uint64_t, okvis::SpeedAndBias> sbCache_;
+  mutable std::map<std::size_t, okvis::kinematics::TransformationCacheless> extrinsicsCache_;
   double optTimeLimit_ = -1.0;    ///< Optimisation time budget [s] (<0: none).
   int optMinIterations_ = 3;      ///< Minimum LM iterations regardless of budget.
 

@@ -43,7 +43,7 @@
 #include <vector>
 #include <opengv/types.hpp>
 #include <opengv/relative_pose/CentralRelativeAdapter.hpp>
-#include <okvis/ViSlamBackend.hpp>
+#include <okvis/EstimatorBackend.hpp>
 #include <okvis/cameras/NCameraSystem.hpp>
 #include <okvis/assert_macros.hpp>
 
@@ -67,7 +67,7 @@ class FrameRelativeAdapter : public RelativeAdapterBase {
   OKVIS_DEFINE_EXCEPTION(Exception, std::runtime_error)
 
   /// \brief The underlying okvis::ViSlamBackend estimator class.
-  using Estimator = okvis::ViSlamBackend;
+  using Estimator = okvis::Estimator;
 
   /**
    * @brief Constructor

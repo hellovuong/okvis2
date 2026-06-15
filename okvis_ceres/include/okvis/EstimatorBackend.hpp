@@ -22,4 +22,8 @@
 #include <okvis/ViSlamBackend.hpp>
 #endif
 
+// Brings in the `using okvis::Estimator = ...` selection typedef (forward-decl
+// based) so includers get both the typedef and the concrete backend type.
+#include <okvis/ViFrontendInterface.hpp>
+
 #endif  // INCLUDE_OKVIS_ESTIMATORBACKEND_HPP_

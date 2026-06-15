@@ -49,7 +49,7 @@
 #pragma GCC diagnostic pop
 #include <okvis/kinematics/Transformation.hpp>
 #include <okvis/FrameTypedefs.hpp>
-#include <okvis/ViSlamBackend.hpp>
+#include <okvis/EstimatorBackend.hpp>
 #include <okvis/cameras/NCameraSystem.hpp>
 
 /**
@@ -73,7 +73,7 @@ class FrameNoncentralAbsoluteAdapter : public AbsoluteAdapterBase {
   OKVIS_DEFINE_EXCEPTION(Exception,std::runtime_error)
 
   /// \brief The underlying okvis::ViSlamBackend estimator class.
-  using Estimator = okvis::ViSlamBackend;
+  using Estimator = okvis::Estimator;
 
   /// \brief type for describing matches.
   typedef std::vector<int> matches_t;

@@ -13,6 +13,7 @@
 #include <okvis/GtsamBackend.hpp>
 
 #include <algorithm>
+#include <fstream>
 #include <vector>
 
 #include <gtsam/inference/Symbol.h>
@@ -26,6 +27,26 @@ namespace okvis {
 namespace {
 namespace gb = okvis::gtsam_backend;
 }  // namespace
+
+namespace {
+okvis::ImuParameters defaultImuParameters() {
+  okvis::ImuParameters p;
+  p.g = 9.81;
+  p.sigma_g_c = 12.0e-4;
+  p.sigma_a_c = 8.0e-3;
+  p.sigma_gw_c = 4.0e-6;
+  p.sigma_aw_c = 4.0e-5;
+  p.a_max = 1000.0;
+  p.g_max = 1000.0;
+  p.sigma_bg = 0.03;
+  p.sigma_ba = 0.1;
+  p.g0.setZero();
+  p.a0.setZero();
+  return p;
+}
+}  // namespace
+
+GtsamBackend::GtsamBackend() : GtsamBackend(defaultImuParameters()) {}
 
 GtsamBackend::GtsamBackend(const okvis::ImuParameters& imuParameters)
     : imuParameters_(imuParameters),
@@ -52,6 +73,7 @@ int GtsamBackend::addCamera(const okvis::CameraParameters& cameraParameters) {
 bool GtsamBackend::addStates(okvis::MultiFramePtr multiFrame,
                              const okvis::ImuMeasurementDeque& imuMeasurements,
                              bool asKeyframe) {
+  multiFrames_[StateId(multiFrame->id())] = multiFrame;
   return addPropagatedState(StateId(multiFrame->id()), multiFrame->timestamp(),
                             imuMeasurements, asKeyframe);
 }
@@ -221,7 +243,7 @@ void GtsamBackend::addImuFactor(StateId from, StateId to,
       gb::biasKey(i), gb::biasKey(j), pim));
 }
 
-void GtsamBackend::addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W,
+bool GtsamBackend::addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W,
                                bool initialised) {
   const std::uint64_t i = id.value();
   const gtsam::Point3 p = gb::toPoint3(hp_W);
@@ -231,12 +253,13 @@ void GtsamBackend::addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W,
     values_.update(gb::landmarkKey(i), p);
     delayed_.updateValues(v);
     landmarkMeta_[i].initialised = initialised;
-    return;
+    return true;
   }
   values_.insert(gb::landmarkKey(i), p);
   delayed_.addValues(v);
   landmarks_.insert(i);
   landmarkMeta_[i] = LandmarkMeta{initialised, -1, 0.0};
+  return true;
 }
 
 bool GtsamBackend::setLandmark(LandmarkId id, const Eigen::Vector4d& hp_W,
@@ -614,6 +637,123 @@ Eigen::Vector4d GtsamBackend::getLandmark(LandmarkId id) const {
 okvis::kinematics::Transformation GtsamBackend::getExtrinsics(
     std::size_t cameraId) const {
   return gb::fromPose3(values_.at<gtsam::Pose3>(gb::extrinsicsKey(cameraId)));
+}
+
+// --- Estimator-API getters/setters + stubs (track-5 integration) -----------
+
+const okvis::kinematics::TransformationCacheless& GtsamBackend::pose(StateId id) const {
+  poseCache_[id.value()] = okvis::kinematics::TransformationCacheless(getPose(id));
+  return poseCache_.at(id.value());
+}
+
+const okvis::SpeedAndBias& GtsamBackend::speedAndBias(StateId id) const {
+  sbCache_[id.value()] = getSpeedAndBias(id);
+  return sbCache_.at(id.value());
+}
+
+const okvis::kinematics::TransformationCacheless& GtsamBackend::extrinsics(
+    StateId /*id*/, unsigned char camIdx) const {
+  extrinsicsCache_[camIdx] =
+      okvis::kinematics::TransformationCacheless(getExtrinsics(camIdx));
+  return extrinsicsCache_.at(camIdx);
+}
+
+okvis::MultiFramePtr GtsamBackend::multiFrame(StateId stateId) const {
+  const auto it = multiFrames_.find(stateId);
+  return it == multiFrames_.end() ? nullptr : it->second;
+}
+
+bool GtsamBackend::setPose(StateId id,
+                           const okvis::kinematics::TransformationCacheless& pose) {
+  if (!states_.count(id.value())) return false;
+  values_.update(gb::poseKey(id.value()),
+                 gb::toPose3(okvis::kinematics::Transformation(pose)));
+  return true;
+}
+
+bool GtsamBackend::setSpeedAndBias(StateId id, const okvis::SpeedAndBias& sb) {
+  if (!states_.count(id.value())) return false;
+  values_.update(gb::velocityKey(id.value()), gb::velocityOf(sb));
+  values_.update(gb::biasKey(id.value()), gb::biasOf(sb));
+  return true;
+}
+
+bool GtsamBackend::setObservationInformation(StateId, std::size_t, std::size_t,
+                                             const Eigen::Matrix2d&) {
+  // TODO(track-5 S2): rebuild the reprojection factor with the new information.
+  return true;
+}
+
+bool GtsamBackend::applyInitialisation(const Eigen::Quaterniond& q_gw,
+                                       const Eigen::Vector3d& b_g,
+                                       const Eigen::Vector3d& b_a) {
+  rewriteAfterInit(gtsam::Rot3(q_gw), gtsam::imuBias::ConstantBias(b_a, b_g), {});
+  return true;
+}
+
+bool GtsamBackend::mergeLandmark(const LandmarkId&, const LandmarkId&) {
+  // TODO(track-5 S2): re-key the merged observations' factors. Unsupported yet.
+  return false;
+}
+
+int GtsamBackend::mergeLandmarks(std::vector<LandmarkId>, std::vector<LandmarkId>) {
+  return 0;
+}
+
+void GtsamBackend::doFinalBa(int numIter, ::ceres::Solver::Summary& /*summary*/,
+                             std::set<StateId>& updatedStatesBa, double, double, int,
+                             bool) {
+  optimise(numIter);
+  updatedStatesBa.clear();
+  for (const std::uint64_t id : states_) updatedStatesBa.insert(StateId(id));
+}
+
+bool GtsamBackend::writeFinalCsvTrajectory(const std::string& csvFileName,
+                                           bool /*rpg*/) const {
+  std::ofstream f(csvFileName);
+  if (!f.good()) return false;
+  f << "timestamp, p_WS_W_x, p_WS_W_y, p_WS_W_z, q_WS_x, q_WS_y, q_WS_z, q_WS_w, "
+       "v_WS_W_x, v_WS_W_y, v_WS_W_z, b_g_x, b_g_y, b_g_z, b_a_x, b_a_y, b_a_z\n";
+  for (const std::uint64_t id : states_) {
+    const StateId s(id);
+    const okvis::kinematics::Transformation T = getPose(s);
+    const okvis::SpeedAndBias sb = getSpeedAndBias(s);
+    const okvis::Time ts = timestamp(s);
+    const std::uint64_t tns =
+        static_cast<std::uint64_t>(ts.sec) * 1000000000ull + ts.nsec;
+    const Eigen::Quaterniond q(T.q());
+    const Eigen::Vector3d p = T.r();
+    f << tns << ", " << p.x() << ", " << p.y() << ", " << p.z() << ", " << q.x()
+      << ", " << q.y() << ", " << q.z() << ", " << q.w() << ", " << sb(0) << ", "
+      << sb(1) << ", " << sb(2) << ", " << sb(3) << ", " << sb(4) << ", " << sb(5)
+      << ", " << sb(6) << ", " << sb(7) << ", " << sb(8) << "\n";
+  }
+  return true;
+}
+
+void GtsamBackend::clear() {
+  graph_ = gtsam::NonlinearFactorGraph();
+  values_.clear();
+  states_.clear();
+  landmarks_.clear();
+  extrinsics_.clear();
+  stateMeta_.clear();
+  cameraParams_.clear();
+  keyFrames_.clear();
+  imuFrames_.clear();
+  loopClosureFrames_.clear();
+  landmarkMeta_.clear();
+  observations_.clear();
+  landmarkObs_.clear();
+  multiFrames_.clear();
+  poseCache_.clear();
+  sbCache_.clear();
+  extrinsicsCache_.clear();
+  T_AiS_.clear();
+  delayed_ = gtsam_backend::DelayedGraph();
+  activePriors_.clear();
+  droppedBatches_.clear();
+  retainedDroppedKeys_.clear();
 }
 
 }  // namespace okvis
