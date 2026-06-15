@@ -271,6 +271,38 @@ bool GtsamBackend::isLandmarkInitialised(LandmarkId id) const {
   return it != landmarkMeta_.end() && it->second.initialised;
 }
 
+bool GtsamBackend::removeObservation(KeypointIdentifier kid) {
+  const auto it = observations_.find(kid);
+  if (it == observations_.end()) return false;
+  // Remove the reprojection factor by pointer (robust across graph rebuilds).
+  const gtsam::NonlinearFactor::shared_ptr target = it->second.factor;
+  gtsam::NonlinearFactorGraph rebuilt;
+  for (const auto& f : graph_) {
+    if (f && f != target) rebuilt.push_back(f);
+  }
+  graph_ = rebuilt;
+  const auto lo = landmarkObs_.find(it->second.landmarkId.value());
+  if (lo != landmarkObs_.end()) lo->second.erase(kid);
+  observations_.erase(it);
+  return true;
+}
+
+int GtsamBackend::cleanUnobservedLandmarks() {
+  std::vector<std::uint64_t> toRemove;
+  for (const std::uint64_t lm : landmarks_) {
+    const auto it = landmarkObs_.find(lm);
+    if (it == landmarkObs_.end() || it->second.empty()) toRemove.push_back(lm);
+  }
+  for (const std::uint64_t lm : toRemove) {
+    const gtsam::Key k = gb::landmarkKey(lm);
+    if (values_.exists(k)) values_.erase(k);
+    landmarks_.erase(lm);
+    landmarkMeta_.erase(lm);
+    landmarkObs_.erase(lm);
+  }
+  return static_cast<int>(toRemove.size());
+}
+
 bool GtsamBackend::getLandmark(LandmarkId id, okvis::MapPoint2& mapPoint) const {
   const std::uint64_t i = id.value();
   if (!landmarks_.count(i)) return false;
@@ -326,6 +358,21 @@ void GtsamBackend::marginalizeKeys(const gtsam::KeyVector& keysToDrop) {
     } else if (sym.chr() == 'l') {
       landmarks_.erase(sym.index());
       landmarkMeta_.erase(sym.index());
+      landmarkObs_.erase(sym.index());
+    }
+  }
+
+  // Purge observation bookkeeping whose state/landmark was marginalized (their
+  // reprojection factors were consumed into the prior, so they no longer exist).
+  for (auto it = observations_.begin(); it != observations_.end();) {
+    const bool stateGone = dropSet.count(gb::poseKey(it->first.frameId)) > 0;
+    const bool lmGone = dropSet.count(gb::landmarkKey(it->second.landmarkId.value())) > 0;
+    if (stateGone || lmGone) {
+      const auto lo = landmarkObs_.find(it->second.landmarkId.value());
+      if (lo != landmarkObs_.end()) lo->second.erase(it->first);
+      it = observations_.erase(it);
+    } else {
+      ++it;
     }
   }
 

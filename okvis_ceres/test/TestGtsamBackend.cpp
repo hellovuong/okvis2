@@ -333,3 +333,47 @@ TEST(GtsamBackend, LandmarkMetadata) {
   EXPECT_FALSE(backend.setLandmark(okvis::LandmarkId(99), p2, true));
   EXPECT_FALSE(backend.setLandmarkInitialized(okvis::LandmarkId(99), true));
 }
+
+// Track-5 S2: observation lifecycle (add/query/remove + cleanUnobservedLandmarks).
+TEST(GtsamBackend, ObservationLifecycle) {
+  okvis::GtsamBackend backend(makeImuParameters());
+  auto camera = std::static_pointer_cast<const CameraGeometry>(
+      CameraGeometry::createTestObject());
+  backend.setExtrinsics(0, okvis::kinematics::Transformation(), true);
+  backend.addState(okvis::StateId(1), okvis::kinematics::Transformation(),
+                   okvis::SpeedAndBias::Zero());
+  backend.addPosePrior(okvis::StateId(1), okvis::kinematics::Transformation(), 1e-3, 1e-2);
+
+  Eigen::Vector4d lm;
+  lm << 0.2, -0.1, 3.0, 1.0;  // in front of cam0 (pose + extrinsics identity)
+  backend.addLandmark(okvis::LandmarkId(100), lm, true);
+  Eigen::Vector2d kp;
+  ASSERT_EQ(camera->projectHomogeneous(lm, &kp),
+            okvis::cameras::ProjectionStatus::Successful);
+  const Eigen::Matrix2d info = Eigen::Matrix2d::Identity() * 64.0;
+
+  const okvis::KeypointIdentifier kid1(1, 0, 0), kid2(1, 0, 1);
+  EXPECT_FALSE(backend.isObserved(kid1));
+  EXPECT_TRUE(backend.addObservation<CameraGeometry>(okvis::LandmarkId(100), kid1, kp,
+                                                     info, camera));
+  EXPECT_TRUE(backend.isObserved(kid1));
+  // duplicate rejected
+  EXPECT_FALSE(backend.addObservation<CameraGeometry>(okvis::LandmarkId(100), kid1, kp,
+                                                      info, camera));
+  EXPECT_TRUE(backend.addObservation<CameraGeometry>(okvis::LandmarkId(100), kid2, kp,
+                                                     info, camera));
+  EXPECT_TRUE(std::isfinite(backend.optimise(5)));
+
+  // Remove one observation; landmark still observed -> not cleaned.
+  EXPECT_TRUE(backend.removeObservation(kid1));
+  EXPECT_FALSE(backend.isObserved(kid1));
+  EXPECT_TRUE(backend.isObserved(kid2));
+  EXPECT_EQ(backend.cleanUnobservedLandmarks(), 0);
+  EXPECT_TRUE(backend.isLandmarkAdded(okvis::LandmarkId(100)));
+
+  // Remove the last observation -> landmark unobserved -> cleaned.
+  EXPECT_TRUE(backend.removeObservation(kid2));
+  EXPECT_EQ(backend.cleanUnobservedLandmarks(), 1);
+  EXPECT_FALSE(backend.isLandmarkAdded(okvis::LandmarkId(100)));
+  EXPECT_TRUE(std::isfinite(backend.optimise(5)));
+}

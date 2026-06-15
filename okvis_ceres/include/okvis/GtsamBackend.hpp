@@ -182,6 +182,54 @@ class GtsamBackend {
         std::move(cameraGeometry)));
   }
 
+  // --- data association (Estimator API, track-5 S2) -------------------------
+  /// \brief Add a tracked observation (keyed by KeypointIdentifier) with full
+  ///        bookkeeping so it can later be queried/removed/cleaned. The factor is
+  ///        tracked by index in the active graph for O(1) removal.
+  template <class GEOMETRY_TYPE>
+  bool addObservation(LandmarkId landmarkId, KeypointIdentifier kid,
+                      const Eigen::Vector2d& measurement,
+                      const Eigen::Matrix2d& information,
+                      std::shared_ptr<const GEOMETRY_TYPE> cameraGeometry,
+                      bool useCauchy = true) {
+    if (landmarks_.count(landmarkId.value()) == 0) return false;
+    if (observations_.count(kid)) return false;
+    typedef okvis::gtsam_backend::GtsamReprojectionFactor<GEOMETRY_TYPE> Factor;
+    const double cauchy = useCauchy ? cauchyParam_ : 0.0;
+    const gtsam::NonlinearFactor::shared_ptr factor = boost::make_shared<Factor>(
+        Factor::makeNoiseModel(information, cauchy),
+        okvis::gtsam_backend::poseKey(kid.frameId),
+        okvis::gtsam_backend::landmarkKey(landmarkId.value()),
+        okvis::gtsam_backend::extrinsicsKey(kid.cameraIndex), measurement,
+        std::move(cameraGeometry));
+    graph_.push_back(factor);
+    observations_[kid] = ObsRecord{landmarkId, factor};
+    landmarkObs_[landmarkId.value()].insert(kid);
+    return true;
+  }
+
+  /// \brief Add an observation, extracting measurement + info (64/size^2) and the
+  ///        camera geometry from the MultiFrame (the live frontend signature).
+  template <class GEOMETRY_TYPE>
+  bool addObservation(const okvis::MultiFrame& multiFrame, LandmarkId landmarkId,
+                      KeypointIdentifier kid, bool useCauchy = true) {
+    Eigen::Vector2d measurement;
+    multiFrame.getKeypoint(kid.cameraIndex, kid.keypointIndex, measurement);
+    double size = 1.0;
+    multiFrame.getKeypointSize(kid.cameraIndex, kid.keypointIndex, size);
+    const Eigen::Matrix2d info = Eigen::Matrix2d::Identity() * (64.0 / (size * size));
+    return addObservation<GEOMETRY_TYPE>(
+        landmarkId, kid, measurement, info,
+        multiFrame.template geometryAs<GEOMETRY_TYPE>(kid.cameraIndex), useCauchy);
+  }
+
+  /// \brief Whether a keypoint observation is present.
+  bool isObserved(KeypointIdentifier kid) const { return observations_.count(kid) > 0; }
+  /// \brief Remove a tracked observation (drops its factor from the active graph).
+  bool removeObservation(KeypointIdentifier kid);
+  /// \brief Remove landmarks that have no remaining observations. Returns the count.
+  int cleanUnobservedLandmarks();
+
   // --- marginalisation ------------------------------------------------------
   /// \brief Marginalize a set of variables out of the sliding window.
   ///
@@ -282,6 +330,16 @@ class GtsamBackend {
     double quality = 0.0;
   };
   std::map<std::uint64_t, LandmarkMeta> landmarkMeta_;  ///< Keyed by LandmarkId value.
+
+  /// \brief Tracked observation record (for query/removal). Stores the factor
+  ///        pointer (stable across graph rebuilds, unlike an index).
+  struct ObsRecord {
+    LandmarkId landmarkId;
+    gtsam::NonlinearFactor::shared_ptr factor;
+  };
+  std::map<KeypointIdentifier, ObsRecord> observations_;          ///< By keypoint id.
+  std::map<std::uint64_t, std::set<KeypointIdentifier>> landmarkObs_;  ///< Per-landmark obs.
+  double cauchyParam_ = 1.0;  ///< Reprojection Cauchy robustifier scale.
   double optTimeLimit_ = -1.0;    ///< Optimisation time budget [s] (<0: none).
   int optMinIterations_ = 3;      ///< Minimum LM iterations regardless of budget.
 
