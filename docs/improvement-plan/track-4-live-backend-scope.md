@@ -26,6 +26,40 @@ live**: `DelayedGraph` (retains raw factors for a lag window) + `recomputeBounda
 `maybeRemarginalize` (bias-change trigger, throttle, circuit-breaker). These run only
 on the GTSAM backend, which is not wired into `ThreadedSlam`.
 
+## Milestone-2 finding (2026-06-15): observation preservation ALREADY EXISTS
+
+Investigating milestone 2 ("preserve observations") revealed OKVIS already has the
+substrate, so milestones 2 & 4 collapse into composing existing primitives:
+
+- `TwoPoseGraphError` **retains its observations** internally (`observations_`, plus
+  per-edge `landmarks_` in the reference frame) and is **reversible**:
+  `convertToReprojectionErrors()` rebuilds the full reprojection observations with
+  landmark positions recovered at the **current** reference pose
+  (`hp_W = T_WS0 * landmarks_[id]`) — i.e. re-expressed at the corrected linearization.
+- `ViGraphEstimator::convertToObservations(keyframe, …)` already un-marginalizes a
+  keyframe's pose-graph edges back into live observations + landmarks, and is used in
+  production by loop closure (`ViSlamBackend.cpp:369, 1331`).
+- `convertToPoseGraphMst(…)` re-marginalizes.
+
+So **marginalization replacement = `convertToObservations` (un-marg) followed by
+`convertToPoseGraphMst` (re-marg) at the current poses** — both production-tested.
+No new observation-preservation code is needed; the bias/linearization staleness is
+fixed by round-tripping an edge through these two existing methods.
+
+> Note: `TwoPoseGraphError` is **visual-only** (relative pose, landmarks marginalized);
+> IMU bias does not enter it. What goes stale is its relative-pose **linearization
+> point** after loop-closure / large pose corrections. The IMU edges (`ImuError`)
+> already re-preintegrate on bias change. So the re-marg trigger is primarily
+> pose-correction / loop-closure driven, not bias-driven.
+
+### Revised milestones (simplified)
+- **M2 (done — finding):** preservation confirmed in `TwoPoseGraphError` + `convertToObservations`.
+- **M3:** lag `fullGraph_` (or gate which pose-graph KFs are eligible for re-marg).
+- **M4:** `remarginalisePoseGraph(keyframe)` = `convertToObservations(kf)` +
+  `convertToPoseGraphMst({kf}∪connected)` — thin composition of existing methods.
+- **M5:** trigger (post-loop-closure / pose-correction threshold) + throttle; validate
+  on real data that the round-trip is non-destructive and improves post-loop-closure ATE.
+
 ## Two paths
 
 **Path 1 — Ceres-native (recommended for the live system).** Extend the existing MST
