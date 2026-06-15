@@ -230,6 +230,23 @@ class GtsamBackend {
   /// \brief Remove landmarks that have no remaining observations. Returns the count.
   int cleanUnobservedLandmarks();
 
+  /// \brief States co-observing a landmark with `id` (covisibility), excluding id.
+  bool getObservedIds(StateId id, std::set<StateId>& observedIds) const;
+  /// \brief Fill all current landmarks as MapPoint2 (id -> point/init/quality/class).
+  std::size_t getLandmarks(okvis::MapPoints& landmarks) const;
+
+  // --- loop-closure / full-graph: no-op stubs (S3 will implement) -----------
+  // Frontend/ThreadedSlam query these; with loop closure disabled they are inert.
+  bool isLoopClosing() const { return false; }
+  bool isLoopClosureAvailable() const { return false; }
+  bool isLoopClosureFrame(StateId) const { return false; }
+  bool isRecentLoopClosureFrame(StateId) const { return false; }
+  bool isPlaceRecognitionFrame(StateId) const { return false; }
+  bool isPoseGraphFrame(StateId) const { return false; }
+  bool closedLoop(StateId) const { return false; }
+  bool needsFullGraphOptimisation() const { return false; }
+  const std::set<StateId>& loopClosureFrames() const { return loopClosureFrames_; }
+
   // --- marginalisation ------------------------------------------------------
   /// \brief Marginalize a set of variables out of the sliding window.
   ///
@@ -322,6 +339,7 @@ class GtsamBackend {
               Eigen::aligned_allocator<okvis::CameraParameters>> cameraParams_;  ///< Registered cameras.
   std::set<StateId> keyFrames_;   ///< Current keyframes.
   std::set<StateId> imuFrames_;   ///< Current IMU-window frames.
+  std::set<StateId> loopClosureFrames_;  ///< Loop-closure frames (always empty until S3).
 
   /// \brief Per-landmark metadata for the Estimator API.
   struct LandmarkMeta {

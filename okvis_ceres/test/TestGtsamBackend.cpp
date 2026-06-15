@@ -377,3 +377,49 @@ TEST(GtsamBackend, ObservationLifecycle) {
   EXPECT_FALSE(backend.isLandmarkAdded(okvis::LandmarkId(100)));
   EXPECT_TRUE(std::isfinite(backend.optimise(5)));
 }
+
+// Track-5 S2: covisibility (getObservedIds) + getLandmarks; loop-closure stubs inert.
+TEST(GtsamBackend, CovisibilityAndLandmarkDump) {
+  okvis::GtsamBackend backend(makeImuParameters());
+  auto camera = std::static_pointer_cast<const CameraGeometry>(
+      CameraGeometry::createTestObject());
+  backend.setExtrinsics(0, okvis::kinematics::Transformation(), true);
+  for (int s = 1; s <= 3; ++s)
+    backend.addState(okvis::StateId(s), okvis::kinematics::Transformation(),
+                     okvis::SpeedAndBias::Zero());
+
+  Eigen::Vector4d lmA, lmB;
+  lmA << 0.1, 0.0, 3.0, 1.0;
+  lmB << -0.1, 0.1, 4.0, 1.0;
+  backend.addLandmark(okvis::LandmarkId(1), lmA, true);
+  backend.addLandmark(okvis::LandmarkId(2), lmB, false);
+  Eigen::Vector2d kpA, kpB;
+  camera->projectHomogeneous(lmA, &kpA);
+  camera->projectHomogeneous(lmB, &kpB);
+  const Eigen::Matrix2d info = Eigen::Matrix2d::Identity() * 64.0;
+
+  // landmark 1 observed by states 1 & 2; landmark 2 by state 3 only.
+  backend.addObservation<CameraGeometry>(okvis::LandmarkId(1),
+                                         okvis::KeypointIdentifier(1, 0, 0), kpA, info, camera);
+  backend.addObservation<CameraGeometry>(okvis::LandmarkId(1),
+                                         okvis::KeypointIdentifier(2, 0, 0), kpA, info, camera);
+  backend.addObservation<CameraGeometry>(okvis::LandmarkId(2),
+                                         okvis::KeypointIdentifier(3, 0, 0), kpB, info, camera);
+
+  std::set<okvis::StateId> coObs;
+  EXPECT_TRUE(backend.getObservedIds(okvis::StateId(1), coObs));
+  EXPECT_EQ(coObs.size(), 1u);                       // state 2 co-observes landmark 1
+  EXPECT_TRUE(coObs.count(okvis::StateId(2)) > 0);
+  EXPECT_FALSE(coObs.count(okvis::StateId(3)) > 0);  // disjoint landmark
+
+  okvis::MapPoints dump;
+  EXPECT_EQ(backend.getLandmarks(dump), 2u);
+  EXPECT_TRUE(dump.at(okvis::LandmarkId(1)).isInitialised);
+  EXPECT_FALSE(dump.at(okvis::LandmarkId(2)).isInitialised);
+
+  // Loop-closure stubs are inert.
+  EXPECT_FALSE(backend.isLoopClosing());
+  EXPECT_FALSE(backend.isLoopClosureAvailable());
+  EXPECT_FALSE(backend.needsFullGraphOptimisation());
+  EXPECT_TRUE(backend.loopClosureFrames().empty());
+}

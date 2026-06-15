@@ -303,6 +303,33 @@ int GtsamBackend::cleanUnobservedLandmarks() {
   return static_cast<int>(toRemove.size());
 }
 
+bool GtsamBackend::getObservedIds(StateId id, std::set<StateId>& observedIds) const {
+  observedIds.clear();
+  // Landmarks observed by `id`.
+  std::set<std::uint64_t> myLandmarks;
+  for (const auto& kv : observations_) {
+    if (kv.first.frameId == id.value()) myLandmarks.insert(kv.second.landmarkId.value());
+  }
+  // Other states observing any of those landmarks (covisibility).
+  for (const std::uint64_t lm : myLandmarks) {
+    const auto it = landmarkObs_.find(lm);
+    if (it == landmarkObs_.end()) continue;
+    for (const KeypointIdentifier& kid : it->second) {
+      if (kid.frameId != id.value()) observedIds.insert(StateId(kid.frameId));
+    }
+  }
+  return true;
+}
+
+std::size_t GtsamBackend::getLandmarks(okvis::MapPoints& landmarks) const {
+  landmarks.clear();
+  for (const std::uint64_t lm : landmarks_) {
+    okvis::MapPoint2 mp;
+    if (getLandmark(LandmarkId(lm), mp)) landmarks[LandmarkId(lm)] = mp;
+  }
+  return landmarks.size();
+}
+
 bool GtsamBackend::getLandmark(LandmarkId id, okvis::MapPoint2& mapPoint) const {
   const std::uint64_t i = id.value();
   if (!landmarks_.count(i)) return false;
