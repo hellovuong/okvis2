@@ -23,9 +23,12 @@
 #ifndef INCLUDE_OKVIS_GTSAMBACKEND_HPP_
 #define INCLUDE_OKVIS_GTSAMBACKEND_HPP_
 
+#include <map>
 #include <memory>
 #include <set>
 #include <vector>
+
+#include <boost/make_shared.hpp>
 
 #include <Eigen/Core>
 
@@ -40,6 +43,11 @@
 #include <okvis/Time.hpp>
 #include <okvis/kinematics/Transformation.hpp>
 
+#include <deque>
+
+#include <gtsam/geometry/Rot3.h>
+
+#include <okvis/gtsam/DelayedGraph.hpp>
 #include <okvis/gtsam/GtsamConversions.hpp>
 #include <okvis/gtsam/GtsamReprojectionFactor.hpp>
 #include <okvis/gtsam/ImuPreintegrationGtsam.hpp>
@@ -94,12 +102,12 @@ class GtsamBackend {
                       std::shared_ptr<const GEOMETRY_TYPE> cameraGeometry,
                       double cauchyParam = 0.0) {
     typedef okvis::gtsam_backend::GtsamReprojectionFactor<GEOMETRY_TYPE> Factor;
-    graph_.emplace_shared<Factor>(
+    addRawFactor(boost::make_shared<Factor>(
         Factor::makeNoiseModel(information, cauchyParam),
         okvis::gtsam_backend::poseKey(stateId.value()),
         okvis::gtsam_backend::landmarkKey(landmarkId.value()),
         okvis::gtsam_backend::extrinsicsKey(cameraId), keypoint,
-        std::move(cameraGeometry));
+        std::move(cameraGeometry)));
   }
 
   // --- marginalisation ------------------------------------------------------
@@ -115,6 +123,40 @@ class GtsamBackend {
 
   /// \brief Convenience: marginalize a full state (pose + velocity + bias).
   void marginalizeState(StateId id, const std::vector<LandmarkId>& alsoDrop = {});
+
+  // --- DM-VIO delayed marginalization (Phase D) -----------------------------
+  /// \brief Enable delayed marginalization with a lag of `lag` keyframes. The
+  ///        delayed graph retains the raw factors of marginalized states within
+  ///        the lag, so the active marginalization prior can be re-derived
+  ///        (relinearized) after a bias/gravity correction. 0 disables (legacy).
+  void enableDelayedMarginalization(int lag);
+
+  /// \brief Re-derive the active marginalization prior from the retained raw
+  ///        factors at the CURRENT linearization, and swap it into the active
+  ///        graph (DM-VIO marginalization replacement). No-op without retained
+  ///        drops or when delayed marginalization is disabled.
+  void remarginalize();
+
+  /// \brief Trigger remarginalize() when the aggregate bias change since the
+  ///        last re-marginalization exceeds a threshold, subject to a throttle
+  ///        and a circuit-breaker (disables after repeated throttle hits).
+  /// \return True if a re-marginalization was performed.
+  bool maybeRemarginalize(const gtsam::imuBias::ConstantBias& currentBias,
+                          double nowSec, double biasThreshold,
+                          double minIntervalSec);
+
+  // --- post-init state rewrite (Phase C bridge) -----------------------------
+  /// \brief Apply the result of dynamic IMU initialization: rotate all states
+  ///        and landmarks from the (arbitrary) visual world into the
+  ///        gravity-aligned world by R_gw (= R_wg^{-1}), set the IMU bias, and
+  ///        overwrite the recovered per-keyframe velocities. After this the
+  ///        world z-axis is gravity-aligned, matching the IMU factor params.
+  /// \param R_gw        Rotation from visual world to gravity-aligned world.
+  /// \param bias        Recovered IMU bias.
+  /// \param velocities  Recovered per-StateId velocities (in the visual world).
+  void rewriteAfterInit(const gtsam::Rot3& R_gw,
+                        const gtsam::imuBias::ConstantBias& bias,
+                        const std::map<std::uint64_t, Eigen::Vector3d>& velocities);
 
   // --- optimisation ---------------------------------------------------------
   /// \brief Run batch Levenberg-Marquardt and adopt the result as the estimate.
@@ -149,6 +191,22 @@ class GtsamBackend {
   std::set<std::uint64_t> states_;       ///< StateIds with variables added.
   std::set<std::uint64_t> landmarks_;    ///< LandmarkIds with variables added.
   std::set<std::size_t> extrinsics_;     ///< Camera ids with extrinsics added.
+
+  // --- delayed marginalization state ---
+  /// \brief Mirror of the raw (relinearizable) factors, for re-marginalization.
+  gtsam_backend::DelayedGraph delayed_;
+  int delayedLag_ = 0;                          ///< Lag in keyframes; 0 disables.
+  std::deque<gtsam::KeyVector> droppedBatches_; ///< Per-marginalization dropped keys.
+  gtsam::KeyVector retainedDroppedKeys_;        ///< Dropped keys still retained in delayed_.
+  std::vector<gtsam::NonlinearFactor::shared_ptr> activePriors_;  ///< Current marg priors in graph_.
+  Eigen::Matrix<double, 6, 1> biasAtLastRemarg_ = Eigen::Matrix<double, 6, 1>::Zero();
+  bool haveRemargBias_ = false;
+  double lastRemargTimeSec_ = -1e18;
+  int remargThrottleHits_ = 0;
+  bool remargDisabled_ = false;
+
+  /// \brief Append a raw factor to both the active and delayed graphs.
+  void addRawFactor(const gtsam::NonlinearFactor::shared_ptr& factor);
 };
 
 }  // namespace okvis

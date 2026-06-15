@@ -133,6 +133,7 @@ if(BUILD_TESTS)
       test/TestDelayedGraph.cpp
       test/TestGravityAlignmentFactor.cpp
       test/TestViImuInitializer.cpp
+      test/TestGtsamDelayedMarg.cpp
     )
   endif()
   target_link_libraries(${TEST_NAME}

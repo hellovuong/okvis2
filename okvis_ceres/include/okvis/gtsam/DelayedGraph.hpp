@@ -70,6 +70,18 @@ class DelayedGraph {
       const gtsam::KeyVector& keysToKeep,
       const gtsam::Values& correctedValues) const;
 
+  /// \brief Re-derive ONLY the boundary (separator) prior obtained by
+  ///        marginalizing keysToDrop out of the factors that touch them, at a
+  ///        corrected linearization. Non-mutating. Unlike computeMarginalPrior,
+  ///        this excludes factors over purely-live keys, so the result can
+  ///        replace an existing boundary prior without double-counting live
+  ///        factors. This is the marginalization-replacement operator.
+  /// \param keysToDrop      The marginalized keys whose prior is re-derived.
+  /// \param correctedValues Linearization point (must contain the touched keys).
+  gtsam::NonlinearFactor::shared_ptr recomputeBoundaryPrior(
+      const gtsam::KeyVector& keysToDrop,
+      const gtsam::Values& correctedValues) const;
+
  private:
   gtsam::NonlinearFactorGraph graph_;
   gtsam::Values values_;

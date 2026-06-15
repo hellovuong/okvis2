@@ -88,5 +88,26 @@ gtsam::NonlinearFactor::shared_ptr DelayedGraph::computeMarginalPrior(
   return marginalizeOut(graph_, correctedValues, keysToDrop);
 }
 
+gtsam::NonlinearFactor::shared_ptr DelayedGraph::recomputeBoundaryPrior(
+    const gtsam::KeyVector& keysToDrop,
+    const gtsam::Values& correctedValues) const {
+  if (keysToDrop.empty()) return nullptr;
+  const std::set<gtsam::Key> dropSet(keysToDrop.begin(), keysToDrop.end());
+
+  // Only the factors that touch a dropped key contribute to the boundary prior;
+  // factors over purely-live keys are left for the active graph (no double count).
+  gtsam::NonlinearFactorGraph touching;
+  for (const auto& factor : graph_) {
+    if (!factor) continue;
+    for (const gtsam::Key k : factor->keys()) {
+      if (dropSet.count(k)) {
+        touching.push_back(factor);
+        break;
+      }
+    }
+  }
+  return marginalizeOut(touching, correctedValues, keysToDrop);
+}
+
 }  // namespace gtsam_backend
 }  // namespace okvis
