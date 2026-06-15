@@ -54,11 +54,52 @@ fixed by round-tripping an edge through these two existing methods.
 
 ### Revised milestones (simplified)
 - **M2 (done — finding):** preservation confirmed in `TwoPoseGraphError` + `convertToObservations`.
-- **M3:** lag `fullGraph_` (or gate which pose-graph KFs are eligible for re-marg).
+- **M3 (folded into M5):** originally "lag `fullGraph_` to preserve raw obs" — no longer
+  needed: `TwoPoseGraphError` already retains observations for *every* converted edge,
+  recoverable any time. M3 is therefore not a preservation/lag data structure; it
+  reduces to a **selection + cost policy** — *which* edges to re-derive and *how many*.
+  Since the staleness is pose-driven, the selector is the set of keyframes whose poses
+  moved (the loop-closure-updated state set, or a per-edge pose-delta threshold),
+  **bounded** by a max edges-per-trigger cap and a throttle. That is exactly the M5
+  trigger concern, so M3 merges into M5. (Memory note: observations live inside each
+  `TwoPoseGraphError` — a cost OKVIS already pays for loop-closure un-marg; re-marg adds
+  none.)
 - **M4:** `remarginalisePoseGraph(keyframe)` = `convertToObservations(kf)` +
   `convertToPoseGraphMst({kf}∪connected)` — thin composition of existing methods.
-- **M5:** trigger (post-loop-closure / pose-correction threshold) + throttle; validate
-  on real data that the round-trip is non-destructive and improves post-loop-closure ATE.
+- **M5 (incl. ex-M3):** select affected keyframes (loop-closure set / pose-delta),
+  cap + throttle, fire after loop closure; validate on real data that the round-trip is
+  non-destructive and improves post-loop-closure ATE.
+
+## Conclusion (2026-06-15): track-4 is largely redundant for OKVIS — recommend NOT implementing M4/M5
+
+Carrying the M4 composition analysis to its end shows OKVIS **already has** what DM-VIO's
+delayed marginalization / marginalization replacement provides, for the only case where
+it matters:
+
+1. **No staleness without a correction.** Old poses are **frozen** after `minDeltaT=2.0 s`
+   (`ViSlamBackend.cpp` `freezePosesUntil`/`freezeSpeedAndBiasesUntil`, ~lines 604/761).
+   A marginalized keyframe's pose is constant, so its `TwoPoseGraphError` linearization
+   point never drifts — there is nothing to re-derive between corrections.
+2. **Replacement already happens at the only correction event.** At loop closure,
+   `addLoopClosureFrame` calls `convertToObservations` (un-marg) on the affected frames,
+   the full graph re-optimizes them, and `applyStrategy` re-runs `convertToPoseGraphMst`
+   (re-marg) at the corrected poses. That **is** marginalization replacement, already in
+   production.
+3. The visual `TwoPoseGraphError` is **bias-independent** (M2 note), and IMU edges
+   already `redoPreintegration` on bias change — so there is no separate bias-drift gap.
+
+DM-VIO's marginalization replacement is a big win for systems whose marginalization is
+**irreversible** (e.g. DSO's photometric prior). OKVIS's marginalization is **reversible**
+(`TwoPoseGraphError` retains observations) and is already re-derived on loop closure.
+The incremental value of M4/M5 is therefore small, while the implementation touches the
+most delicate machinery in the system (loop-closure un-marg, pose freezing, dual-graph
+`auxiliaryStates_` bookkeeping) with no standalone test path — high risk, low reward.
+
+**Recommendation:** close track-4 here. The DM-VIO IMU contributions worth pursuing in
+OKVIS are (a) the dynamic init feedback — done, ~10% ATE where init is poor (room4); and
+(b) the full `ViSlamBackend`→`GtsamBackend` swap to bring true visual-prior PGBA + GTSAM
+delayed-marg live, if/when a GTSAM backend is desired. Everything below is retained for
+reference should OKVIS's freezing/loop-closure model change.
 
 ## Two paths
 
