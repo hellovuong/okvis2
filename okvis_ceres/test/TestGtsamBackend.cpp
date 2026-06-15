@@ -205,3 +205,43 @@ TEST(GtsamBackend, StateMetadataAndQueries) {
   EXPECT_FALSE(backend.isKeyframe(okvis::StateId(1)));
   EXPECT_EQ(backend.currentStateId().value(), 3u);
 }
+
+// Track-5 S1: per-frame IMU-propagated state creation (addPropagatedState).
+TEST(GtsamBackend, PropagatedStateSequenceStaysConsistent) {
+  const okvis::ImuParameters params = makeImuParameters();
+  okvis::GtsamBackend backend(params);
+  backend.setExtrinsics(0, okvis::kinematics::Transformation(), true);
+
+  auto imuFor = [&](double t0, double t1) {
+    okvis::ImuMeasurementDeque d;
+    const double dt = 1.0 / 200.0;
+    for (double t = t0 - 0.01; t <= t1 + 0.01 + 1e-9; t += dt) {
+      okvis::ImuMeasurement m;
+      m.timeStamp = okvis::Time(t < 0 ? 0.0 : t);
+      m.measurement.gyroscopes = Eigen::Vector3d::Zero();
+      m.measurement.accelerometers = Eigen::Vector3d(0, 0, params.g);  // static
+      d.push_back(m);
+    }
+    return d;
+  };
+
+  const double dt = 0.1;
+  const int n = 5;
+  for (int k = 0; k < n; ++k) {
+    const okvis::ImuMeasurementDeque imu =
+        imuFor(k == 0 ? 0.0 : (k - 1) * dt, k * dt);
+    EXPECT_TRUE(backend.addPropagatedState(okvis::StateId(k + 1), okvis::Time(k * dt),
+                                           imu, true));
+  }
+  EXPECT_EQ(backend.numFrames(), static_cast<std::size_t>(n));
+  EXPECT_EQ(backend.currentStateId().value(), static_cast<std::uint64_t>(n));
+
+  const double err = backend.optimise(15);
+  EXPECT_TRUE(std::isfinite(err));
+
+  // Static body under gravity: every frame should stay near the origin.
+  for (int k = 0; k < n; ++k) {
+    const okvis::kinematics::Transformation T = backend.getPose(okvis::StateId(k + 1));
+    EXPECT_LT(T.r().norm(), 0.05) << "frame " << k << " drifted: " << T.r().transpose();
+  }
+}

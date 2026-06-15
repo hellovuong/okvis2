@@ -35,6 +35,71 @@ void GtsamBackend::addRawFactor(
   delayed_.addFactor(factor);
 }
 
+int GtsamBackend::addImu(const okvis::ImuParameters& imuParameters) {
+  imuParameters_ = imuParameters;
+  imuParams_ = gb::makeCombinedParams(imuParameters);
+  return 0;
+}
+
+int GtsamBackend::addCamera(const okvis::CameraParameters& cameraParameters) {
+  cameraParams_.push_back(cameraParameters);
+  return static_cast<int>(cameraParams_.size()) - 1;
+}
+
+bool GtsamBackend::addStates(okvis::MultiFramePtr multiFrame,
+                             const okvis::ImuMeasurementDeque& imuMeasurements,
+                             bool asKeyframe) {
+  return addPropagatedState(StateId(multiFrame->id()), multiFrame->timestamp(),
+                            imuMeasurements, asKeyframe);
+}
+
+bool GtsamBackend::addPropagatedState(StateId id, const okvis::Time& timestamp,
+                                      const okvis::ImuMeasurementDeque& imu,
+                                      bool asKeyframe) {
+  const okvis::SpeedAndBias biasFromParams =
+      gb::toSpeedAndBias(Eigen::Vector3d::Zero(),
+                         gtsam::imuBias::ConstantBias(imuParameters_.a0,
+                                                      imuParameters_.g0));
+
+  if (states_.empty()) {
+    // First frame: gravity-align orientation from the mean specific force.
+    okvis::kinematics::Transformation T_WS;  // identity
+    if (!imu.empty()) {
+      Eigen::Vector3d acc = Eigen::Vector3d::Zero();
+      for (const auto& m : imu) acc += m.measurement.accelerometers;
+      acc /= static_cast<double>(imu.size());
+      if (acc.norm() > 1e-6) {
+        const Eigen::Quaterniond q_WS = Eigen::Quaterniond::FromTwoVectors(
+            acc.normalized(), Eigen::Vector3d::UnitZ());
+        T_WS = okvis::kinematics::Transformation(Eigen::Vector3d::Zero(), q_WS);
+      }
+    }
+    addState(id, T_WS, biasFromParams, timestamp, asKeyframe);
+    // Gauge priors: anchor position tightly, orientation loosely (IMU/visual fix it).
+    addPosePrior(id, T_WS, 1e-3, 1e-1);
+    addSpeedAndBiasPrior(id, biasFromParams, 0.1, imuParameters_.sigma_bg,
+                         imuParameters_.sigma_ba);
+    return true;
+  }
+
+  // Subsequent frame: IMU-propagate from the previous state for the initial guess.
+  const StateId prev = currentStateId();
+  const okvis::Time prevTs = stateMeta_.at(prev.value()).timestamp;
+  const okvis::SpeedAndBias prevSb = getSpeedAndBias(prev);
+  const gtsam::imuBias::ConstantBias prevBias = gb::biasOf(prevSb);
+  const gtsam::NavState prevState(gb::toPose3(getPose(prev)),
+                                  gb::velocityOf(prevSb));
+  const gtsam::PreintegratedCombinedMeasurements pim =
+      gb::preintegrate(imu, imuParameters_, prevBias, prevTs, timestamp);
+  const gtsam::NavState predicted = pim.predict(prevState, prevBias);
+
+  const okvis::kinematics::Transformation T_WS = gb::fromPose3(predicted.pose());
+  const okvis::SpeedAndBias sb = gb::toSpeedAndBias(predicted.velocity(), prevBias);
+  addState(id, T_WS, sb, timestamp, asKeyframe);
+  addImuFactor(prev, id, imu, prevTs, timestamp);
+  return true;
+}
+
 void GtsamBackend::setExtrinsics(std::size_t cameraId,
                                  const okvis::kinematics::Transformation& T_SC,
                                  bool fixed) {

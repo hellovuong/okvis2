@@ -39,6 +39,7 @@
 
 #include <okvis/FrameTypedefs.hpp>
 #include <okvis/Measurements.hpp>
+#include <okvis/MultiFrame.hpp>
 #include <okvis/Parameters.hpp>
 #include <okvis/Time.hpp>
 #include <okvis/kinematics/Transformation.hpp>
@@ -61,6 +62,23 @@ class GtsamBackend {
 
   /// \brief Construct with IMU parameters (for preintegration noise / gravity).
   explicit GtsamBackend(const okvis::ImuParameters& imuParameters);
+
+  // --- sensors (Estimator API, track-5 S1) ----------------------------------
+  /// \brief Register IMU parameters (rebuilds the preintegration params). Index 0.
+  int addImu(const okvis::ImuParameters& imuParameters);
+  /// \brief Register a camera's online-calibration parameters. Returns its index.
+  int addCamera(const okvis::CameraParameters& cameraParameters);
+
+  // --- per-frame state creation (Estimator API, track-5 S1) ------------------
+  /// \brief Add a new frame's states: initialise (first frame, gravity-aligned)
+  ///        or IMU-propagate from the previous state and link with an IMU factor.
+  bool addStates(okvis::MultiFramePtr multiFrame,
+                 const okvis::ImuMeasurementDeque& imuMeasurements,
+                 bool asKeyframe);
+  /// \brief Core of addStates, decoupled from MultiFrame for testing.
+  bool addPropagatedState(StateId id, const okvis::Time& timestamp,
+                          const okvis::ImuMeasurementDeque& imuMeasurements,
+                          bool asKeyframe);
 
   // --- extrinsics -----------------------------------------------------------
   /// \brief Add/define camera extrinsics T_SC. If fixed, anchors with a tight
@@ -216,6 +234,8 @@ class GtsamBackend {
     bool isKeyframe = false;
   };
   std::map<std::uint64_t, StateMeta> stateMeta_;  ///< Keyed by StateId value.
+  std::vector<okvis::CameraParameters,
+              Eigen::aligned_allocator<okvis::CameraParameters>> cameraParams_;  ///< Registered cameras.
 
   // --- delayed marginalization state ---
   /// \brief Mirror of the raw (relinearizable) factors, for re-marginalization.
