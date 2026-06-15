@@ -90,9 +90,11 @@ endif()
 # globally at top-level scope (see top CMakeLists.txt) when GTSAM is found.
 if(USE_GTSAM AND GTSAM_FOUND)
   target_sources(${LIB_NAME} PRIVATE
+    include/okvis/GtsamBackend.hpp
     include/okvis/gtsam/GtsamConversions.hpp
     include/okvis/gtsam/GtsamReprojectionFactor.hpp
     include/okvis/gtsam/ImuPreintegrationGtsam.hpp
+    src/gtsam/GtsamBackend.cpp
     src/gtsam/ImuPreintegrationGtsam.cpp
   )
   target_link_libraries(${LIB_NAME} PUBLIC gtsam)
@@ -119,6 +121,7 @@ if(BUILD_TESTS)
     target_sources(${TEST_NAME} PRIVATE
       test/TestGtsamImu.cpp
       test/TestGtsamReprojection.cpp
+      test/TestGtsamBackend.cpp
     )
   endif()
   target_link_libraries(${TEST_NAME}
