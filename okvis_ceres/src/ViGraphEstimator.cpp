@@ -1284,5 +1284,41 @@ bool ViGraphEstimator::isSynched(const ViGraphEstimator & other) const
   return true;
 }
 
+bool ViGraphEstimator::applyDynamicInitialisation(
+    const kinematics::Transformation& T_gw, const Eigen::Vector3d& b_g,
+    const Eigen::Vector3d& b_a) {
+  const Eigen::Matrix3d R_gw = T_gw.C();
+  const Eigen::Matrix4d T_gw_mat = T_gw.T();
+
+  // Rotate every state into the gravity-aligned world and set the recovered
+  // biases (keeping the rotated velocity). Re-anchor the pose prior if present.
+  for (auto& it : states_) {
+    State& s = it.second;
+    const kinematics::Transformation T_WS_old = s.pose->estimate();
+    const kinematics::Transformation T_WS_new = T_gw * T_WS_old;
+    s.pose->setEstimate(T_WS_new);
+
+    SpeedAndBias sb = s.speedAndBias->estimate();
+    sb.head<3>() = R_gw * sb.head<3>();  // rotate velocity into the new world
+    sb.segment<3>(3) = b_g;              // gyro bias
+    sb.tail<3>() = b_a;                  // accel bias
+    s.speedAndBias->setEstimate(sb);
+
+    if (s.posePrior.errorTerm) {
+      s.posePrior.errorTerm->setMeasurement(T_WS_new);
+    }
+  }
+
+  // Rotate all landmarks (homogeneous world points) consistently.
+  for (auto& it : landmarks_) {
+    Landmark& lm = it.second;
+    const Eigen::Vector4d hp_W = lm.hPoint->estimate();
+    lm.hPoint->setEstimate(Eigen::Vector4d(T_gw_mat * hp_W));
+  }
+
+  // IMU edges re-preintegrate lazily at the new bias on their next evaluation.
+  return true;
+}
+
 }  // namespace okvis
 

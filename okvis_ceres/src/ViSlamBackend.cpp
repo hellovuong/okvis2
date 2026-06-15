@@ -908,6 +908,20 @@ bool ViSlamBackend::isLandmarkInitialised(LandmarkId landmarkId) const
   return realtimeGraph_.isLandmarkInitialised(landmarkId);
 }
 
+bool ViSlamBackend::applyInitialisation(const Eigen::Quaterniond& q_gw,
+                                        const Eigen::Vector3d& b_g,
+                                        const Eigen::Vector3d& b_a)
+{
+  // Require both graphs in sync (not mid loop-closure) for an atomic rewrite.
+  if (isLoopClosing_ || isLoopClosureAvailable_) {
+    return false;
+  }
+  const kinematics::Transformation T_gw(Eigen::Vector3d::Zero(), q_gw);
+  bool success = realtimeGraph_.applyDynamicInitialisation(T_gw, b_g, b_a);
+  success = fullGraph_.applyDynamicInitialisation(T_gw, b_g, b_a) && success;
+  return success;
+}
+
 bool ViSlamBackend::setPose(StateId id, const kinematics::TransformationCacheless &pose)
 {
   bool success = realtimeGraph_.setPose(id, pose);

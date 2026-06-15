@@ -613,6 +613,14 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
                   << gW.transpose() << "] |g|=" << gW.norm()
                   << " b_g=[" << r.bias.gyroscope().transpose() << "] b_a=["
                   << r.bias.accelerometer().transpose() << "]";
+        // Feed the recovered gravity alignment + bias into the live estimator:
+        // rotate the world by R_gw = R_wg^{-1} and set the IMU biases.
+        const Eigen::Quaterniond q_gw = r.R_wg.inverse().toQuaternion();
+        const bool applied = estimator_.applyInitialisation(
+            q_gw, r.bias.gyroscope(), r.bias.accelerometer());
+        LOG(INFO) << "[DM-VIO init] applyInitialisation "
+                  << (applied ? "applied to estimator"
+                              : "skipped (loop-closing)");
       }
     }
   }

@@ -139,6 +139,21 @@ class ViGraphEstimator : public ViGraph
   /// \return True on success.
   bool unfreezeExtrinsicsFrom(StateId stateId);
 
+  /// \brief Apply a DM-VIO-style dynamic IMU initialization to this graph:
+  ///        rotate the whole world into the gravity-aligned frame by T_gw and
+  ///        overwrite the IMU biases on all states. Visual residuals are
+  ///        unchanged (global rotation); the fixed-gravity IMU factors become
+  ///        consistent with the gravity-aligned world and are re-preintegrated
+  ///        lazily at the new bias. The first-state pose prior is re-anchored.
+  /// \param T_gw Rotation-only transform from the (tilted) visual world to the
+  ///             gravity-aligned world (T_gw = R_wg^{-1}, zero translation).
+  /// \param b_g  Recovered gyroscope bias to set on every state.
+  /// \param b_a  Recovered accelerometer bias to set on every state.
+  /// \return True on success.
+  bool applyDynamicInitialisation(const kinematics::Transformation& T_gw,
+                                  const Eigen::Vector3d& b_g,
+                                  const Eigen::Vector3d& b_a);
+
   /// \brief Helper struct to access underlying two-pose pose graph links.
   struct PoseGraphEdge {
     std::shared_ptr<ceres::TwoPoseGraphError> poseGraphError; ///< Error term.

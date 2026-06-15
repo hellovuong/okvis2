@@ -425,6 +425,19 @@ class ViSlamBackend //: public VioBackendInterface
    * @return True on success.
    */
   bool setSpeedAndBias(StateId id, const SpeedAndBias & speedAndBias);
+
+  /**
+   * @brief Apply a DM-VIO dynamic IMU initialization: rotate the whole world
+   *        (both graphs) into the gravity-aligned frame and set the recovered
+   *        IMU biases. Only valid while not loop-closing (graphs in sync).
+   * @param q_gw Rotation from the (tilted) visual world to the gravity-aligned
+   *             world (q_gw = q_wg^{-1}).
+   * @param b_g  Recovered gyroscope bias.
+   * @param b_a  Recovered accelerometer bias.
+   * @return True on success (false if loop-closing).
+   */
+  bool applyInitialisation(const Eigen::Quaterniond& q_gw,
+                           const Eigen::Vector3d& b_g, const Eigen::Vector3d& b_a);
   /**
    * @brief Set the extrinsics pose (T_SC).
    * @param id The state ID for which go set the extrinsics.
