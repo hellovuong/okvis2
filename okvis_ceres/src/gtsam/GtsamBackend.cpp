@@ -221,7 +221,8 @@ void GtsamBackend::addImuFactor(StateId from, StateId to,
       gb::biasKey(i), gb::biasKey(j), pim));
 }
 
-void GtsamBackend::addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W) {
+void GtsamBackend::addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W,
+                               bool initialised) {
   const std::uint64_t i = id.value();
   const gtsam::Point3 p = gb::toPoint3(hp_W);
   gtsam::Values v;
@@ -229,11 +230,57 @@ void GtsamBackend::addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W) {
   if (landmarks_.count(i)) {
     values_.update(gb::landmarkKey(i), p);
     delayed_.updateValues(v);
+    landmarkMeta_[i].initialised = initialised;
     return;
   }
   values_.insert(gb::landmarkKey(i), p);
   delayed_.addValues(v);
   landmarks_.insert(i);
+  landmarkMeta_[i] = LandmarkMeta{initialised, -1, 0.0};
+}
+
+bool GtsamBackend::setLandmark(LandmarkId id, const Eigen::Vector4d& hp_W,
+                               bool isInitialised) {
+  const std::uint64_t i = id.value();
+  if (!landmarks_.count(i)) return false;
+  const gtsam::Point3 p = gb::toPoint3(hp_W);
+  values_.update(gb::landmarkKey(i), p);
+  gtsam::Values v;
+  v.insert(gb::landmarkKey(i), p);
+  delayed_.updateValues(v);
+  landmarkMeta_[i].initialised = isInitialised;
+  return true;
+}
+
+bool GtsamBackend::setLandmarkInitialized(LandmarkId id, bool initialised) {
+  const auto it = landmarkMeta_.find(id.value());
+  if (it == landmarkMeta_.end()) return false;
+  it->second.initialised = initialised;
+  return true;
+}
+
+bool GtsamBackend::setLandmarkClassification(LandmarkId id, int classification) {
+  const auto it = landmarkMeta_.find(id.value());
+  if (it == landmarkMeta_.end()) return false;
+  it->second.classification = classification;
+  return true;
+}
+
+bool GtsamBackend::isLandmarkInitialised(LandmarkId id) const {
+  const auto it = landmarkMeta_.find(id.value());
+  return it != landmarkMeta_.end() && it->second.initialised;
+}
+
+bool GtsamBackend::getLandmark(LandmarkId id, okvis::MapPoint2& mapPoint) const {
+  const std::uint64_t i = id.value();
+  if (!landmarks_.count(i)) return false;
+  mapPoint.id = id;
+  mapPoint.point = gb::toHomogeneous(values_.at<gtsam::Point3>(gb::landmarkKey(i)));
+  const auto it = landmarkMeta_.find(i);
+  mapPoint.isInitialised = (it != landmarkMeta_.end()) && it->second.initialised;
+  mapPoint.quality = (it != landmarkMeta_.end()) ? it->second.quality : 0.0;
+  mapPoint.classification = (it != landmarkMeta_.end()) ? it->second.classification : -1;
+  return true;
 }
 
 void GtsamBackend::marginalizeKeys(const gtsam::KeyVector& keysToDrop) {
@@ -278,6 +325,7 @@ void GtsamBackend::marginalizeKeys(const gtsam::KeyVector& keysToDrop) {
       imuFrames_.erase(StateId(sym.index()));
     } else if (sym.chr() == 'l') {
       landmarks_.erase(sym.index());
+      landmarkMeta_.erase(sym.index());
     }
   }
 

@@ -148,7 +148,22 @@ class GtsamBackend {
 
   // --- landmarks ------------------------------------------------------------
   /// \brief Insert a landmark (homogeneous world point) as an initial value.
-  void addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W);
+  void addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W,
+                   bool initialised = false);
+
+  // --- landmark metadata (Estimator API, track-5 S2) ------------------------
+  /// \brief Set a landmark's world position and initialisation flag.
+  bool setLandmark(LandmarkId id, const Eigen::Vector4d& hp_W, bool isInitialised);
+  /// \brief Set a landmark's initialisation flag.
+  bool setLandmarkInitialized(LandmarkId id, bool initialised);
+  /// \brief Set a landmark's classification id.
+  bool setLandmarkClassification(LandmarkId id, int classification);
+  /// \brief Whether the landmark exists in the graph.
+  bool isLandmarkAdded(LandmarkId id) const { return landmarks_.count(id.value()) > 0; }
+  /// \brief Whether the landmark is flagged initialised.
+  bool isLandmarkInitialised(LandmarkId id) const;
+  /// \brief Fill a MapPoint2 with the landmark estimate + metadata.
+  bool getLandmark(LandmarkId id, okvis::MapPoint2& mapPoint) const;
 
   /// \brief Add a stereo/mono reprojection observation.
   /// \tparam GEOMETRY_TYPE The OKVIS camera geometry type.
@@ -259,6 +274,14 @@ class GtsamBackend {
               Eigen::aligned_allocator<okvis::CameraParameters>> cameraParams_;  ///< Registered cameras.
   std::set<StateId> keyFrames_;   ///< Current keyframes.
   std::set<StateId> imuFrames_;   ///< Current IMU-window frames.
+
+  /// \brief Per-landmark metadata for the Estimator API.
+  struct LandmarkMeta {
+    bool initialised = false;
+    int classification = -1;
+    double quality = 0.0;
+  };
+  std::map<std::uint64_t, LandmarkMeta> landmarkMeta_;  ///< Keyed by LandmarkId value.
   double optTimeLimit_ = -1.0;    ///< Optimisation time budget [s] (<0: none).
   int optMinIterations_ = 3;      ///< Minimum LM iterations regardless of budget.
 

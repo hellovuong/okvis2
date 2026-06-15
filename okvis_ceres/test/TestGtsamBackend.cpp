@@ -298,3 +298,38 @@ TEST(GtsamBackend, WindowStrategyMarginalisesOldFrames) {
     EXPECT_LT(backend.getPose(okvis::StateId(id)).r().norm(), 0.05) << "kept " << id;
   }
 }
+
+// Track-5 S2: landmark metadata (init/classification/quality) + getLandmark.
+TEST(GtsamBackend, LandmarkMetadata) {
+  okvis::GtsamBackend backend(makeImuParameters());
+  Eigen::Vector4d p;
+  p << 1, 2, 3, 1;
+
+  EXPECT_FALSE(backend.isLandmarkAdded(okvis::LandmarkId(10)));
+  backend.addLandmark(okvis::LandmarkId(10), p, /*initialised=*/false);
+  EXPECT_TRUE(backend.isLandmarkAdded(okvis::LandmarkId(10)));
+  EXPECT_FALSE(backend.isLandmarkInitialised(okvis::LandmarkId(10)));
+
+  EXPECT_TRUE(backend.setLandmarkInitialized(okvis::LandmarkId(10), true));
+  EXPECT_TRUE(backend.isLandmarkInitialised(okvis::LandmarkId(10)));
+  EXPECT_TRUE(backend.setLandmarkClassification(okvis::LandmarkId(10), 7));
+
+  okvis::MapPoint2 mp;
+  ASSERT_TRUE(backend.getLandmark(okvis::LandmarkId(10), mp));
+  EXPECT_EQ(mp.id.value(), 10u);
+  EXPECT_EQ(mp.classification, 7);
+  EXPECT_TRUE(mp.isInitialised);
+  EXPECT_LT((mp.point - p).norm(), 1e-9);
+
+  Eigen::Vector4d p2;
+  p2 << 4, 5, 6, 1;
+  EXPECT_TRUE(backend.setLandmark(okvis::LandmarkId(10), p2, /*isInitialised=*/false));
+  ASSERT_TRUE(backend.getLandmark(okvis::LandmarkId(10), mp));
+  EXPECT_LT((mp.point - p2).norm(), 1e-9);
+  EXPECT_FALSE(mp.isInitialised);
+
+  // Unknown landmark.
+  EXPECT_FALSE(backend.getLandmark(okvis::LandmarkId(99), mp));
+  EXPECT_FALSE(backend.setLandmark(okvis::LandmarkId(99), p2, true));
+  EXPECT_FALSE(backend.setLandmarkInitialized(okvis::LandmarkId(99), true));
+}
