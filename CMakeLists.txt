@@ -7,7 +7,7 @@ option (USE_SYSTEM_BRISK
 option (USE_SYSTEM_DBOW2
         "Use DBoW2 via find_package rather than downloading it as part of okvis" OFF)
 option (USE_SYSTEM_CERES
-        "Use ceres via find_package rather than downloading it as part of okvis" OFF)
+        "Use ceres via find_package rather than downloading it as part of okvis" ON)
 option (BUILD_APPS
         "Builds a demo app (which require boost and OpenCV highgui)" ON)
 option (BUILD_TESTS
@@ -24,6 +24,8 @@ option (DO_TIMING
         "Enable timing" ON)
 option (BUILD_SHARED_LIBS
         "Whether to build okvis as a shared library" OFF)
+option (USE_GTSAM
+        "Enable the experimental GTSAM-based DM-VIO backend (dynamic IMU init, delayed marginalization). Requires GTSAM >= 4.2 built against the same Eigen as okvis." ON)
 
 set(OKVIS_CXX_STANDARD 17)
 set(OKVIS_PUBLIC_CXX_FLAGS)
@@ -72,6 +74,32 @@ if(BUILD_TESTS)
 endif()
 
 add_subdirectory(external)
+
+# Make the Ceres imported target available in this (top-level) scope. The
+# okvis_ros2 library is defined directly in this file and links Ceres::ceres,
+# and config-mode imported targets created inside subdirectory scopes (e.g.
+# okvis_ceres) do not propagate back up to the parent scope. Finding it here
+# ensures Ceres::ceres exists for every target. When not using system Ceres the
+# target is provided by add_subdirectory(external) above.
+# if(USE_SYSTEM_CERES)
+find_package(Ceres REQUIRED)
+# endif()
+
+# GTSAM for the experimental DM-VIO backend. As with Ceres above, the imported
+# target must be created at top-level scope: the okvis_ros2 library is defined
+# directly in this file and links okvis::Ceres, which (when USE_GTSAM is on)
+# transitively links the `gtsam` imported target. Config-mode imported targets
+# created inside subdirectory scopes (okvis_ceres) do not propagate up here.
+if(USE_GTSAM)
+  find_package(GTSAM 4.2 QUIET)
+  if(GTSAM_FOUND)
+    message(STATUS "GTSAM ${GTSAM_VERSION} found - enabling experimental DM-VIO backend")
+    add_compile_definitions(OKVIS_HAVE_GTSAM)
+  else()
+    message(STATUS "GTSAM (>=4.2) not found - building without the experimental DM-VIO backend")
+    set(USE_GTSAM OFF)
+  endif()
+endif()
 
 add_subdirectory(okvis_util)
 add_subdirectory(okvis_kinematics)

@@ -85,6 +85,18 @@ target_compile_options(${LIB_NAME}
 if(OPENMP_FOUND)
   target_compile_definitions(${LIB_NAME} PRIVATE USE_OPENMP)
 endif()
+# Experimental GTSAM-based DM-VIO backend. Linked PUBLIC because the GTSAM types
+# appear in public headers under include/okvis/gtsam/. OKVIS_HAVE_GTSAM is defined
+# globally at top-level scope (see top CMakeLists.txt) when GTSAM is found.
+if(USE_GTSAM AND GTSAM_FOUND)
+  target_sources(${LIB_NAME} PRIVATE
+    include/okvis/gtsam/GtsamConversions.hpp
+    include/okvis/gtsam/GtsamReprojectionFactor.hpp
+    include/okvis/gtsam/ImuPreintegrationGtsam.hpp
+    src/gtsam/ImuPreintegrationGtsam.cpp
+  )
+  target_link_libraries(${LIB_NAME} PUBLIC gtsam)
+endif()
 add_library(okvis::Ceres ALIAS ${LIB_NAME})
 
 install(TARGETS ${LIB_NAME} EXPORT okvisTargets
@@ -103,6 +115,12 @@ if(BUILD_TESTS)
     test/TestReprojectionError.cpp
     test/test_main.cpp
   )
+  if(USE_GTSAM AND GTSAM_FOUND)
+    target_sources(${TEST_NAME} PRIVATE
+      test/TestGtsamImu.cpp
+      test/TestGtsamReprojection.cpp
+    )
+  endif()
   target_link_libraries(${TEST_NAME}
     ${LIB_NAME}
     gtest
