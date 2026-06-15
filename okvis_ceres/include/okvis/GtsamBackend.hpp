@@ -25,6 +25,7 @@
 
 #include <memory>
 #include <set>
+#include <vector>
 
 #include <Eigen/Core>
 
@@ -100,6 +101,20 @@ class GtsamBackend {
         okvis::gtsam_backend::extrinsicsKey(cameraId), keypoint,
         std::move(cameraGeometry));
   }
+
+  // --- marginalisation ------------------------------------------------------
+  /// \brief Marginalize a set of variables out of the sliding window.
+  ///
+  /// Partitions the graph into factors touching the dropped keys and the rest,
+  /// replaces the former with a single Schur-complement prior
+  /// (LinearContainerFactor) over the separator, and removes the dropped
+  /// variables from the estimate. This is the GTSAM-native analogue of OKVIS's
+  /// MST pose-graph conversion, but the resulting prior is relinearizable.
+  /// \param keysToDrop GTSAM keys (use poseKey/velocityKey/biasKey/landmarkKey).
+  void marginalizeKeys(const gtsam::KeyVector& keysToDrop);
+
+  /// \brief Convenience: marginalize a full state (pose + velocity + bias).
+  void marginalizeState(StateId id, const std::vector<LandmarkId>& alsoDrop = {});
 
   // --- optimisation ---------------------------------------------------------
   /// \brief Run batch Levenberg-Marquardt and adopt the result as the estimate.

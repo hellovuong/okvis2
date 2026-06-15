@@ -12,8 +12,11 @@
 
 #include <okvis/GtsamBackend.hpp>
 
+#include <gtsam/inference/Symbol.h>
 #include <gtsam/navigation/NavState.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
+
+#include <okvis/gtsam/Marginalization.hpp>
 
 namespace okvis {
 
@@ -112,6 +115,57 @@ void GtsamBackend::addLandmark(LandmarkId id, const Eigen::Vector4d& hp_W) {
   }
   values_.insert(gb::landmarkKey(i), p);
   landmarks_.insert(i);
+}
+
+void GtsamBackend::marginalizeKeys(const gtsam::KeyVector& keysToDrop) {
+  if (keysToDrop.empty()) return;
+  const std::set<gtsam::Key> dropSet(keysToDrop.begin(), keysToDrop.end());
+
+  // Partition factors: those touching any dropped key vs. the rest.
+  gtsam::NonlinearFactorGraph touching, keep;
+  for (const auto& factor : graph_) {
+    if (!factor) continue;
+    bool touches = false;
+    for (const gtsam::Key k : factor->keys()) {
+      if (dropSet.count(k)) {
+        touches = true;
+        break;
+      }
+    }
+    if (touches) {
+      touching.push_back(factor);
+    } else {
+      keep.push_back(factor);
+    }
+  }
+
+  // Build the Schur-complement prior over the separator and rebuild the graph.
+  const gtsam::NonlinearFactor::shared_ptr prior =
+      gb::marginalizeOut(touching, values_, keysToDrop);
+  graph_ = keep;
+  if (prior) {
+    graph_.push_back(prior);
+  }
+
+  // Drop the marginalized variables and update bookkeeping.
+  for (const gtsam::Key k : keysToDrop) {
+    if (values_.exists(k)) values_.erase(k);
+    const gtsam::Symbol sym(k);
+    if (sym.chr() == 'x') states_.erase(sym.index());
+    else if (sym.chr() == 'l') landmarks_.erase(sym.index());
+  }
+}
+
+void GtsamBackend::marginalizeState(StateId id,
+                                    const std::vector<LandmarkId>& alsoDrop) {
+  gtsam::KeyVector keys;
+  keys.push_back(gb::poseKey(id.value()));
+  keys.push_back(gb::velocityKey(id.value()));
+  keys.push_back(gb::biasKey(id.value()));
+  for (const LandmarkId& l : alsoDrop) {
+    keys.push_back(gb::landmarkKey(l.value()));
+  }
+  marginalizeKeys(keys);
 }
 
 double GtsamBackend::optimise(int maxIterations) {

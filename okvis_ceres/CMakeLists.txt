@@ -94,8 +94,10 @@ if(USE_GTSAM AND GTSAM_FOUND)
     include/okvis/gtsam/GtsamConversions.hpp
     include/okvis/gtsam/GtsamReprojectionFactor.hpp
     include/okvis/gtsam/ImuPreintegrationGtsam.hpp
+    include/okvis/gtsam/Marginalization.hpp
     src/gtsam/GtsamBackend.cpp
     src/gtsam/ImuPreintegrationGtsam.cpp
+    src/gtsam/Marginalization.cpp
   )
   target_link_libraries(${LIB_NAME} PUBLIC gtsam)
 endif()
@@ -122,6 +124,7 @@ if(BUILD_TESTS)
       test/TestGtsamImu.cpp
       test/TestGtsamReprojection.cpp
       test/TestGtsamBackend.cpp
+      test/TestGtsamMarginalization.cpp
     )
   endif()
   target_link_libraries(${TEST_NAME}
