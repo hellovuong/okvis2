@@ -123,6 +123,7 @@ if(BUILD_TESTS)
     test/TestImuError.cpp
     test/TestPoseError.cpp
     test/TestReprojectionError.cpp
+    test/TestCeresResidualSwap.cpp
     test/test_main.cpp
   )
   if(USE_GTSAM AND GTSAM_FOUND)
