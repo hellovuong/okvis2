@@ -464,6 +464,10 @@ class GtsamBackend {
 
   /// \brief Append a raw factor to both the active and delayed graphs.
   void addRawFactor(const gtsam::NonlinearFactor::shared_ptr& factor);
+
+  /// \brief Drop variables with no incident factor (gtsam elimination would
+  ///        otherwise crash). Called at the start of optimise().
+  void pruneOrphanVariables();
 };
 
 }  // namespace okvis

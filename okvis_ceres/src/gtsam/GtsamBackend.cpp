@@ -73,6 +73,14 @@ int GtsamBackend::addCamera(const okvis::CameraParameters& cameraParameters) {
 bool GtsamBackend::addStates(okvis::MultiFramePtr multiFrame,
                              const okvis::ImuMeasurementDeque& imuMeasurements,
                              bool asKeyframe) {
+  // On the first frame, set up the camera extrinsics from the multiframe's
+  // camera system (the live API never calls setExtrinsics explicitly).
+  if (states_.empty()) {
+    for (std::size_t c = 0; c < multiFrame->numFrames(); ++c) {
+      const auto T_SC = multiFrame->T_SC(c);
+      if (T_SC) setExtrinsics(c, *T_SC, /*fixed=*/true);
+    }
+  }
   multiFrames_[StateId(multiFrame->id())] = multiFrame;
   return addPropagatedState(StateId(multiFrame->id()), multiFrame->timestamp(),
                             imuMeasurements, asKeyframe);
@@ -609,7 +617,43 @@ bool GtsamBackend::setOptimisationTimeLimit(double timeLimit, int minIterations)
   return true;
 }
 
+void GtsamBackend::pruneOrphanVariables() {
+  // gtsam elimination crashes on variables with no incident factor. Such orphans
+  // arise transiently (a landmark added/left unobserved before
+  // cleanUnobservedLandmarks runs, or after outlier removal). Drop them + their
+  // bookkeeping so the graph stays eliminable.
+  gtsam::KeySet referenced;
+  for (const auto& f : graph_) {
+    if (!f) continue;
+    for (const gtsam::Key k : f->keys()) referenced.insert(k);
+  }
+  std::vector<gtsam::Key> orphans;
+  for (const gtsam::Key k : values_.keys()) {
+    if (!referenced.count(k)) orphans.push_back(k);
+  }
+  for (const gtsam::Key k : orphans) {
+    values_.erase(k);
+    const gtsam::Symbol sym(k);
+    switch (sym.chr()) {
+      case 'l':
+        landmarks_.erase(sym.index());
+        landmarkMeta_.erase(sym.index());
+        landmarkObs_.erase(sym.index());
+        break;
+      case 'x':
+        states_.erase(sym.index());
+        stateMeta_.erase(sym.index());
+        keyFrames_.erase(StateId(sym.index()));
+        imuFrames_.erase(StateId(sym.index()));
+        break;
+      default:
+        break;  // velocity/bias/extrinsics orphan: value dropped, no bookkeeping.
+    }
+  }
+}
+
 double GtsamBackend::optimise(int maxIterations) {
+  pruneOrphanVariables();
   gtsam::LevenbergMarquardtParams params;
   params.setMaxIterations(maxIterations);
   params.setLinearSolverType("MULTIFRONTAL_CHOLESKY");

@@ -583,9 +583,7 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
       false, false, frontend_.isInitialized());
   optimiseTimer.stop();
 
-  // Experimental DM-VIO dynamic IMU initialization: drive our ViImuInitializer
-  // on the live keyframe poses + real IMU and log what it recovers. This is a
-  // shadow init (observed only) — it does not yet feed the estimator.
+  // DM-VIO dynamic IMU initialization
   if (parameters_.imu.initStrategy == ImuParameters::InitStrategy::Dynamic &&
       !dmvioInitDone_ && frontend_.isInitialized()) {
     if (!dmvioInitializer_) {
